@@ -1,0 +1,5277 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
+import { 
+  Calendar, 
+  User, 
+  MessageSquare, 
+  Upload, 
+  Search, 
+  Download, 
+  Image as ImageIcon, 
+  Plus, 
+  ListFilter,
+  CheckCircle2,
+  Loader2,
+  AlertCircle,
+  Pencil,
+  Trash2,
+  X,
+  Tag,
+  Ticket,
+  Printer,
+  QrCode,
+  Share2,
+  Camera,
+  Gift,
+  Award,
+  Users,
+  Wallet,
+  TrendingUp,
+  Coins,
+  PhoneCall,
+  Building2,
+  ArrowUpRight,
+  FileSpreadsheet,
+  Sparkles,
+  Check,
+  Copy,
+  FileText,
+  Bell,
+  Send,
+  MessageCircle
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  collection, 
+  addDoc, 
+  updateDoc,
+  deleteDoc,
+  doc,
+  query, 
+  orderBy, 
+  onSnapshot, 
+  serverTimestamp, 
+  limit 
+} from 'firebase/firestore';
+import { db, auth } from './lib/firebase';
+import { handleFirestoreError } from './lib/error-handler';
+import { 
+  FollowUpData, 
+  OperationType, 
+  ProgressData, 
+  ProgressOutcome, 
+  ProgressChannel, 
+  VoucherData, 
+  VoucherType,
+  ReferralPartner,
+  ReferralTransaction,
+  ReferralRedemption
+} from './types';
+import imageCompression from 'browser-image-compression';
+import axios from 'axios';
+import Papa from 'papaparse';
+import JsBarcode from 'jsbarcode';
+import { Html5Qrcode } from 'html5-qrcode';
+import html2canvas from 'html2canvas';
+
+const getVoucherBenefitText = (voucher: any) => {
+  if (!voucher) return '';
+  const type = String(voucher.type).toLowerCase().trim();
+  const val = String(voucher.value).trim();
+  
+  if (type === 'discount %' || type.includes('percent') || type.includes('diskon') || type.includes('%')) {
+    const numeric = val.replace('%', '');
+    return `Diskon ${numeric}%`;
+  }
+  if (type === 'nominal potongan' || type.includes('nominal') || type.includes('potongan') || type.includes('rupiah') || type.includes('idr')) {
+    const numeric = parseInt(val.replace(/\D/g, ''), 10);
+    return isNaN(numeric) ? `Potongan Rp ${val}` : `Potongan Rp ${numeric.toLocaleString('id-ID')}`;
+  }
+  return val;
+};
+
+// Design Constants
+const CATEGORIES = ['CS Follow-up', 'Progress', 'Voucher', 'Tracking Rekomendasi', 'Admin Tracking'];
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState(CATEGORIES[0]);
+  const [activeProgressSubTab, setActiveProgressSubTab] = useState<'pending' | 'done'>('pending');
+  const [progressFilterMonth, setProgressFilterMonth] = useState((new Date().getMonth() + 1).toString().padStart(2, '0') + '-' + new Date().getFullYear());
+  const [dashboardPeriod, setDashboardPeriod] = useState<'7' | '14' | '30' | 'all'>('7');
+  const [progressSearchQuery, setProgressSearchQuery] = useState('');
+  const [selectedDoneProgress, setSelectedDoneProgress] = useState<ProgressData | null>(null);
+  const [followups, setFollowups] = useState<FollowUpData[]>([]);
+  const [progressList, setProgressList] = useState<ProgressData[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // CS Form State
+  const [formDate, setFormDate] = useState(new Date().toISOString().split('T')[0]);
+  const [formPic, setFormPic] = useState(''); // Empty by default for dynamic input
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [formCaption, setFormCaption] = useState('');
+  const [formFile, setFormFile] = useState<File | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [existingScreenshotUrl, setExistingScreenshotUrl] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [successMsg, setSuccessMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+
+  // Progress Form State
+  const [selectedFollowupForProgress, setSelectedFollowupForProgress] = useState<FollowUpData | null>(null);
+  const [progressOutcome, setProgressOutcome] = useState<ProgressOutcome | ''>('');
+  const [progressChannels, setProgressChannels] = useState<ProgressChannel[]>([]);
+  const [progressPic, setProgressPic] = useState('');
+  const [progressDate, setProgressDate] = useState(new Date().toISOString().split('T')[0]);
+  const [progressCaption, setProgressCaption] = useState('');
+  const [progressFile, setProgressFile] = useState<File | null>(null);
+  const [progressUploading, setProgressUploading] = useState(false);
+
+  // Admin Tracking State
+  const [searchPic, setSearchPic] = useState('');
+  const [filterMonth, setFilterMonth] = useState('');
+  const [filterDate, setFilterDate] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [adminCategory, setAdminCategory] = useState<'followups' | 'progress' | 'vouchers' | 'redeem_guide' | 'referrals'>('followups');
+  const [bulkDeleteMonth, setBulkDeleteMonth] = useState('');
+  const [bulkDeleteCategory, setBulkDeleteCategory] = useState<'followups' | 'progress'>('followups');
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+
+  // Voucher State
+  const [vouchers, setVouchers] = useState<VoucherData[]>([]);
+  const [voucherCodeInput, setVoucherCodeInput] = useState('');
+  const [scannedVoucher, setScannedVoucher] = useState<VoucherData | null>(null);
+  const [isSearchingVoucher, setIsSearchingVoucher] = useState(false);
+  const [voucherSearchStatus, setVoucherSearchStatus] = useState<'idle' | 'found' | 'not_found'>('idle');
+  const [voucherRedeemPic, setVoucherRedeemPic] = useState('');
+  const [voucherRedeemCustomerName, setVoucherRedeemCustomerName] = useState('');
+  const [voucherRedeemCustomerPhone, setVoucherRedeemCustomerPhone] = useState('');
+  const [isScanning, setIsScanning] = useState(false);
+  const [cameraFacingMode, setCameraFacingMode] = useState<'environment' | 'user'>('environment');
+  const [scanError, setScanError] = useState('');
+  const [isScanningFile, setIsScanningFile] = useState(false);
+  
+  // Voucher Generate Form State
+  const [genVoucherType, setGenVoucherType] = useState<VoucherType>(VoucherType.DISCOUNT_PERCENT);
+  const [genVoucherValue, setGenVoucherValue] = useState('');
+  const [genMinTransaction, setGenMinTransaction] = useState(0);
+  const [genExpiryDate, setGenExpiryDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 30); // 30 days from now
+    return d.toISOString().split('T')[0];
+  });
+  const [genQuantity, setGenQuantity] = useState(1);
+  const [genCustomerName, setGenCustomerName] = useState('');
+  const [genCustomerPhone, setGenCustomerPhone] = useState('');
+  const [isGeneratingVouchers, setIsGeneratingVouchers] = useState(false);
+
+  // Voucher Listing & Filtering State
+  const [voucherListSearch, setVoucherListSearch] = useState('');
+  const [voucherListFilterStatus, setVoucherListFilterStatus] = useState<'all' | 'active' | 'redeemed' | 'expired'>('all');
+  const [selectedVoucherForPrint, setSelectedVoucherForPrint] = useState<VoucherData | null>(null);
+
+  // Tracking Rekomendasi (Referral / Guide Tracking) State
+  const [referralPartners, setReferralPartners] = useState<ReferralPartner[]>([]);
+  const [referralTransactions, setReferralTransactions] = useState<ReferralTransaction[]>([]);
+  const [referralRedemptions, setReferralRedemptions] = useState<ReferralRedemption[]>([]);
+  const [referralSubTab, setReferralSubTab] = useState<'transactions' | 'partners' | 'redeem'>('transactions');
+
+  // Form State: Register / Edit Partner
+  const [partnerName, setPartnerName] = useState('');
+  const [partnerPhone, setPartnerPhone] = useState('');
+  const [partnerRole, setPartnerRole] = useState('Tour Guide');
+  const [partnerNotes, setPartnerNotes] = useState('');
+  const [editingPartnerId, setEditingPartnerId] = useState<string | null>(null);
+  const [isSavingPartner, setIsSavingPartner] = useState(false);
+
+  // Form State: Log Referral Transaction
+  const [transPartnerId, setTransPartnerId] = useState('');
+  const [transPartnerInput, setTransPartnerInput] = useState('');
+  const [transDate, setTransDate] = useState(new Date().toISOString().split('T')[0]);
+  const [transCustomerName, setTransCustomerName] = useState('');
+  const [transAmount, setTransAmount] = useState('');
+  const [transNotes, setTransNotes] = useState('');
+  const [isSavingTrans, setIsSavingTrans] = useState(false);
+  const [showQuickPartnerModal, setShowQuickPartnerModal] = useState(false);
+
+  // Form State: Commission Payout / Disbursement
+  const [redeemPartnerId, setRedeemPartnerId] = useState('');
+  const [redeemDate, setRedeemDate] = useState(new Date().toISOString().split('T')[0]);
+  const [deductedTxInput, setDeductedTxInput] = useState('');
+  const [redeemRewardInput, setRedeemRewardInput] = useState('');
+  const [redeemNotesInput, setRedeemNotesInput] = useState('');
+  const [isSavingRedemption, setIsSavingRedemption] = useState(false);
+  const [showRedeemModal, setShowRedeemModal] = useState(false);
+
+  // Receipt Modal State & Actions
+  const [selectedRedemptionReceipt, setSelectedRedemptionReceipt] = useState<ReferralRedemption | null>(null);
+  const [showReceiptModal, setShowReceiptModal] = useState(false);
+  const [copiedWaText, setCopiedWaText] = useState(false);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+
+  // Partner Reminder State
+  const [selectedReminderPartner, setSelectedReminderPartner] = useState<ReferralPartner | null>(null);
+  const [showReminderModal, setShowReminderModal] = useState(false);
+  const [copiedReminderWaText, setCopiedReminderWaText] = useState(false);
+
+  // Search & Filters for Referral
+  const [referralSearch, setReferralSearch] = useState('');
+  const [referralPartnerFilter, setReferralPartnerFilter] = useState('all');
+  const [selectedPartnerDetail, setSelectedPartnerDetail] = useState<ReferralPartner | null>(null);
+
+  // Barcode Render Effect
+  const barcodeRef = useRef<SVGSVGElement | null>(null);
+  useEffect(() => {
+    if (selectedVoucherForPrint && barcodeRef.current) {
+      try {
+        JsBarcode(barcodeRef.current, selectedVoucherForPrint.code, {
+          format: "CODE128",
+          width: 2,
+          height: 60,
+          displayValue: true,
+          fontSize: 14,
+          margin: 10
+        });
+      } catch (err) {
+        console.error("Barcode generation error:", err);
+      }
+    }
+  }, [selectedVoucherForPrint]);
+
+  // Fetch data
+  useEffect(() => {
+    const qF = query(collection(db, 'followups'), orderBy('timestamp', 'desc'), limit(500));
+    const unsubscribeF = onSnapshot(qF, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as FollowUpData[];
+      setFollowups(data);
+      if (activeTab !== CATEGORIES[1]) setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'followups');
+      setLoading(false);
+    });
+
+    const qP = query(collection(db, 'progress'), orderBy('timestamp', 'desc'), limit(500));
+    const unsubscribeP = onSnapshot(qP, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as ProgressData[];
+      setProgressList(data);
+      if (activeTab !== CATEGORIES[2]) setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'progress');
+      setLoading(false);
+    });
+
+    const qV = query(collection(db, 'vouchers'), limit(500));
+    const unsubscribeV = onSnapshot(qV, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as VoucherData[];
+      
+      data.sort((a, b) => {
+        const getMs = (val: any) => {
+          if (!val) return Date.now() + 10000;
+          if (typeof val.toDate === 'function') return val.toDate().getTime();
+          if (val.seconds) return val.seconds * 1000;
+          if (val instanceof Date) return val.getTime();
+          const parsed = Date.parse(val);
+          return isNaN(parsed) ? 0 : parsed;
+        };
+        return getMs(b.createdAt) - getMs(a.createdAt);
+      });
+      
+      setVouchers(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'vouchers');
+    });
+
+    // Subscriptions for Referral System
+    const qRP = query(collection(db, 'referral_partners'), limit(500));
+    const unsubscribeRP = onSnapshot(qRP, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as ReferralPartner[];
+      
+      data.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setReferralPartners(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'referral_partners');
+    });
+
+    const qRT = query(collection(db, 'referral_transactions'), limit(1000));
+    const unsubscribeRT = onSnapshot(qRT, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as ReferralTransaction[];
+      
+      data.sort((a, b) => {
+        const getMs = (val: any) => {
+          if (!val) return Date.now() + 10000;
+          if (typeof val.toDate === 'function') return val.toDate().getTime();
+          if (val.seconds) return val.seconds * 1000;
+          if (val instanceof Date) return val.getTime();
+          const parsed = Date.parse(val);
+          return isNaN(parsed) ? 0 : parsed;
+        };
+        return getMs(b.createdAt) - getMs(a.createdAt);
+      });
+      setReferralTransactions(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'referral_transactions');
+    });
+
+    const qRR = query(collection(db, 'referral_redemptions'), limit(1000));
+    const unsubscribeRR = onSnapshot(qRR, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as ReferralRedemption[];
+      
+      data.sort((a, b) => {
+        const getMs = (val: any) => {
+          if (!val) return Date.now() + 10000;
+          if (typeof val.toDate === 'function') return val.toDate().getTime();
+          if (val.seconds) return val.seconds * 1000;
+          if (val instanceof Date) return val.getTime();
+          const parsed = Date.parse(val);
+          return isNaN(parsed) ? 0 : parsed;
+        };
+        return getMs(b.createdAt) - getMs(a.createdAt);
+      });
+      setReferralRedemptions(data);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'referral_redemptions');
+    });
+
+    return () => {
+      unsubscribeF();
+      unsubscribeP();
+      unsubscribeV();
+      unsubscribeRP();
+      unsubscribeRT();
+      unsubscribeRR();
+    };
+  }, [activeTab]);
+
+
+  // Scanner Hook
+  useEffect(() => {
+    let qrScanner: any = null;
+    let isMounted = true;
+    let hasStarted = false;
+
+    if (isScanning) {
+      setScanError('');
+      const element = document.getElementById('reader');
+      if (element) {
+        try {
+          qrScanner = new Html5Qrcode("reader");
+          const config = {
+            fps: 15,
+            qrbox: (width: number, height: number) => {
+              const minSize = Math.min(width, height);
+              let boxWidth = Math.floor(minSize * 0.8);
+              if (boxWidth < 150) boxWidth = 150;
+              let boxHeight = Math.floor(boxWidth * 0.45);
+              if (boxHeight < 50) boxHeight = 50;
+              return {
+                width: boxWidth,
+                height: boxHeight
+              };
+            }
+          };
+
+          qrScanner.start(
+            { facingMode: cameraFacingMode },
+            config,
+            (decodedText: string) => {
+              if (!isMounted) return;
+              const cleanCode = decodedText.trim().toUpperCase();
+              setVoucherCodeInput(cleanCode);
+              setIsScanning(false);
+              
+              const found = vouchers.find(v => v.code === cleanCode);
+              if (found) {
+                setScannedVoucher(found);
+                setVoucherSearchStatus('found');
+                setSuccessMsg(`Voucher ${cleanCode} berhasil discan!`);
+              } else {
+                setScannedVoucher(null);
+                setVoucherSearchStatus('not_found');
+              }
+            },
+            () => {
+              // Ignore frame failures
+            }
+          ).then(() => {
+            if (isMounted) {
+              hasStarted = true;
+            } else {
+              qrScanner.stop().catch((e: any) => console.log("Stopped scanner after unmount", e));
+            }
+          }).catch((err: any) => {
+            if (isMounted) {
+              console.error("Camera start failed:", err);
+              if (err && (String(err).includes('NotReadableError') || String(err).includes('Could not start video source'))) {
+                setScanError("Kamera sedang digunakan oleh aplikasi lain atau izin ditolak. Silakan tutup aplikasi kamera lain, segarkan halaman, atau coba gunakan tombol 'Buka Galeri'!");
+              } else {
+                setScanError("Kamera tidak dapat diakses. Silakan pastikan izin kamera diberikan atau pilih gambar barcode dari galeri.");
+              }
+            }
+          });
+        } catch (setupErr) {
+          console.error("Scanner setup error:", setupErr);
+          setScanError("Gagal menginisialisasi scanner.");
+        }
+      } else {
+        const timer = setTimeout(() => {
+          if (!isMounted) return;
+          setScanError("Menghubungkan ke kamera...");
+        }, 100);
+        return () => clearTimeout(timer);
+      }
+    }
+
+    return () => {
+      isMounted = false;
+      if (qrScanner) {
+        try {
+          if (hasStarted && typeof qrScanner.stop === 'function') {
+            qrScanner.stop().catch((err: any) => {
+              console.log("Stopped camera safely", err);
+            });
+          }
+        } catch (e) {
+          // Ignore DOM cleanup errors
+        }
+      }
+    };
+  }, [isScanning, cameraFacingMode, vouchers]);
+
+  const handleScanFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setScanError('');
+    setIsScanningFile(true);
+    setSuccessMsg('');
+    setErrorMsg('');
+
+    const tempDiv = document.createElement('div');
+    tempDiv.id = 'temp-qr-reader';
+    tempDiv.style.display = 'none';
+    document.body.appendChild(tempDiv);
+
+    try {
+      const qrScanner = new Html5Qrcode('temp-qr-reader');
+      const decodedText = await qrScanner.scanFile(file, true);
+      
+      const cleanCode = decodedText.trim().toUpperCase();
+      setVoucherCodeInput(cleanCode);
+      
+      const found = vouchers.find(v => v.code === cleanCode);
+      if (found) {
+        setScannedVoucher(found);
+        setVoucherSearchStatus('found');
+        setVoucherRedeemCustomerName(found.customerName || '');
+        setVoucherRedeemCustomerPhone(found.customerPhone || '');
+        setSuccessMsg(`Voucher ${cleanCode} berhasil dideteksi dari galeri!`);
+      } else {
+        setScannedVoucher(null);
+        setVoucherSearchStatus('not_found');
+        setErrorMsg(`Voucher ${cleanCode} tidak ditemukan.`);
+      }
+    } catch (err: any) {
+      console.error('Scan file error:', err);
+      setErrorMsg('Gagal mendeteksi barcode/QR code dari gambar. Pastikan gambar jelas dan kode terlihat dengan baik.');
+    } finally {
+      setIsScanningFile(false);
+      try {
+        if (tempDiv && tempDiv.parentNode === document.body) {
+          document.body.removeChild(tempDiv);
+        }
+      } catch (rmErr) {
+        console.warn('Failed to remove temp div:', rmErr);
+      }
+      e.target.value = '';
+    }
+  };
+
+  const handleAdminAuth = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (adminPassword === 'dinalaundry21') {
+      setIsAdminAuthenticated(true);
+      setErrorMsg('');
+    } else {
+      setErrorMsg('Password admin salah!');
+    }
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setErrorMsg('');
+      try {
+        const options = {
+          maxSizeMB: 1,
+          maxWidthOrHeight: 1024,
+          useWebWorker: true,
+        };
+        const compressedFile = await imageCompression(file, options);
+        setFormFile(compressedFile);
+      } catch (error) {
+        console.error('Compression error:', error);
+        setErrorMsg('Gagal mengompres gambar.');
+      }
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // If not editing, we MUST have a file. If editing, we can keep the old one.
+    if (!formPic || !formCaption || !customerName || !customerPhone || (!formFile && !editingId)) {
+      setErrorMsg('Semua field harus diisi.');
+      return;
+    }
+
+    setUploading(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    try {
+      let finalScreenshotUrl = existingScreenshotUrl;
+
+      // 1. Upload to server if there's a new file
+      if (formFile) {
+        const formData = new FormData();
+        formData.append('screenshot', formFile);
+        formData.append('date', formDate);
+        formData.append('pic', formPic);
+
+        const uploadRes = await axios.post('/api/upload', formData);
+        finalScreenshotUrl = uploadRes.data.url;
+
+        if (!finalScreenshotUrl) {
+          throw new Error('Gagal mendapatkan URL screenshot dari server.');
+        }
+
+        // If we were editing and uploaded a new file, we should delete the OLD one
+        if (editingId && existingScreenshotUrl) {
+           try {
+             await axios.post('/api/delete-image', { screenshotUrl: existingScreenshotUrl });
+           } catch (err) {
+             console.warn('Failed to delete old image from Cloudinary:', err);
+           }
+        }
+      }
+
+      if (!finalScreenshotUrl) {
+        throw new Error('Screenshot tidak ditemukan.');
+      }
+
+      // 2. Save to Firestore
+      const monthYear = formDate.substring(5, 7) + '-' + formDate.substring(0, 4); // MM-YYYY
+      
+      const payload: any = {
+        date: formDate,
+        customerName: customerName,
+        customerPhone: customerPhone,
+        pic: formPic,
+        caption: formCaption,
+        screenshotUrl: finalScreenshotUrl,
+        monthYear: monthYear,
+        timestamp: serverTimestamp()
+      };
+
+      try {
+        if (editingId) {
+          await updateDoc(doc(db, 'followups', editingId), payload);
+          setSuccessMsg('Data berhasil diperbarui!');
+        } else {
+          await addDoc(collection(db, 'followups'), payload);
+          setSuccessMsg('Follow-up berhasil disimpan!');
+        }
+      } catch (fErr) {
+        handleFirestoreError(fErr, editingId ? OperationType.UPDATE : OperationType.CREATE, 'followups');
+      }
+
+      // Reset form
+      handleCancelEdit();
+    } catch (error: any) {
+      console.error('Submit error:', error);
+      setErrorMsg(error.message || 'Gagal menyimpan data.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleEdit = (f: FollowUpData) => {
+    setEditingId(f.id || null);
+    setFormDate(f.date);
+    setCustomerName(f.customerName);
+    setCustomerPhone(f.customerPhone);
+    setFormPic(f.pic);
+    setFormCaption(f.caption);
+    setExistingScreenshotUrl(f.screenshotUrl);
+    setFormFile(null); // Clear new file selection
+    setErrorMsg('');
+    setSuccessMsg('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setExistingScreenshotUrl(null);
+    setFormCaption('');
+    setCustomerName('');
+    setCustomerPhone('');
+    setFormPic('');
+    setFormFile(null);
+    // Reset file input
+    const fileInput = document.getElementById('screenshot-upload') as HTMLInputElement;
+    if (fileInput) fileInput.value = '';
+  };
+
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const handleDelete = async (f: FollowUpData) => {
+    if (!f.id) return;
+    setConfirmDeleteId(f.id);
+  };
+
+  const executeDelete = async (f: FollowUpData) => {
+    setDeletingIds(prev => new Set(prev).add(f.id!));
+    setConfirmDeleteId(null);
+    setErrorMsg('');
+    setSuccessMsg('');
+    
+    try {
+      // 1. Delete from Firestore first (primary data)
+      await deleteDoc(doc(db, 'followups', f.id!));
+      
+      // 2. Attempt to delete from Cloudinary in background
+      axios.post('/api/delete-image', { screenshotUrl: f.screenshotUrl }).catch(err => {
+        console.warn('Background Cloudinary delete failed:', err);
+      });
+      
+      setSuccessMsg('Data berhasil dihapus.');
+      if (editingId === f.id) handleCancelEdit();
+    } catch (error: any) {
+      console.error('Delete error:', error);
+      setErrorMsg(error.message || 'Gagal menghapus data.');
+    } finally {
+      setDeletingIds(prev => {
+        const next = new Set(prev);
+        next.delete(f.id!);
+        return next;
+      });
+    }
+  };
+
+  const filteredFollowups = useMemo(() => {
+    return followups.filter(f => {
+      const matchPic = f.pic.toLowerCase().includes(searchPic.toLowerCase());
+      const matchMonth = filterMonth ? f.monthYear === filterMonth : true;
+      const matchDate = filterDate ? f.date === filterDate : true;
+      const matchCustomer = f.customerName?.toLowerCase().includes(searchPic.toLowerCase()) || 
+                             f.customerPhone?.includes(searchPic);
+      return (matchPic || matchCustomer) && matchMonth && matchDate;
+    });
+  }, [followups, searchPic, filterMonth, filterDate]);
+
+  const pendingProgressFollowups = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    return followups.filter(f => {
+      const fDate = new Date(f.date);
+      fDate.setHours(0, 0, 0, 0);
+      
+      const diffTime = today.getTime() - fDate.getTime();
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      
+      const isOldEnough = diffDays >= 4;
+      const isAlreadyProgressed = progressList.some(p => p.followupId === f.id);
+      const matchMonth = progressFilterMonth ? f.monthYear === progressFilterMonth : true;
+      
+      return isOldEnough && !isAlreadyProgressed && matchMonth;
+    });
+  }, [followups, progressList, progressFilterMonth]);
+
+  const doneProgressItems = useMemo(() => {
+    return progressList.filter(p => {
+      const matchMonth = progressFilterMonth ? p.monthYear === progressFilterMonth : true;
+      return matchMonth;
+    });
+  }, [progressList, progressFilterMonth]);
+
+  const doneProgressItemsFiltered = useMemo(() => {
+    return doneProgressItems.filter(p => {
+      const query = progressSearchQuery.trim().toLowerCase();
+      if (!query) return true;
+      const matchName = p.customerName ? p.customerName.toLowerCase().includes(query) : false;
+      const matchPhone = p.customerPhone ? p.customerPhone.toLowerCase().includes(query) : false;
+      return matchName || matchPhone;
+    });
+  }, [doneProgressItems, progressSearchQuery]);
+
+  const filteredProgress = useMemo(() => {
+    return progressList.filter(p => {
+      const matchPic = p.pic.toLowerCase().includes(searchPic.toLowerCase());
+      const matchMonth = filterMonth ? p.monthYear === filterMonth : true;
+      const matchDate = filterDate ? p.date === filterDate : true;
+      const matchCustomer = p.customerName?.toLowerCase().includes(searchPic.toLowerCase());
+      return (matchPic || matchCustomer) && matchMonth && matchDate;
+    });
+  }, [progressList, searchPic, filterMonth, filterDate]);
+
+  const dashboardStats = useMemo(() => {
+    const list = progressList.filter(p => {
+      if (dashboardPeriod === 'all') return true;
+      
+      const [year, month, day] = p.date.split('-').map(Number);
+      if (isNaN(year) || isNaN(month) || isNaN(day)) return false;
+      const itemDate = new Date(year, month - 1, day);
+      
+      const today = new Date();
+      const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      
+      const diffTime = todayDate.getTime() - itemDate.getTime();
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      
+      const limit = Number(dashboardPeriod);
+      return diffDays >= 0 && diffDays < limit;
+    });
+
+    const total = list.length;
+    const respon = list.filter(p => p.outcome === ProgressOutcome.ADA_FEEDBACK || p.outcome === ProgressOutcome.RESPON_TANPA_FEEDBACK).length;
+    const tidakRespon = list.filter(p => p.outcome === ProgressOutcome.TIDAK_ADA_RESPON).length;
+    const responTanpaFeedback = list.filter(p => p.outcome === ProgressOutcome.RESPON_TANPA_FEEDBACK).length;
+
+    return {
+      total,
+      respon,
+      tidakRespon,
+      responTanpaFeedback
+    };
+  }, [progressList, dashboardPeriod]);
+
+  const filteredVouchersAdmin = useMemo(() => {
+    return vouchers.filter(v => {
+      let vDateStr = '';
+      let vMonthYear = '';
+      if (v.createdAt) {
+        let d: Date | null = null;
+        if (typeof v.createdAt.toDate === 'function') {
+          d = v.createdAt.toDate();
+        } else if (v.createdAt.seconds) {
+          d = new Date(v.createdAt.seconds * 1000);
+        } else if (v.createdAt instanceof Date) {
+          d = v.createdAt;
+        } else {
+          d = new Date(v.createdAt);
+        }
+        
+        if (d && !isNaN(d.getTime())) {
+          const year = d.getFullYear();
+          const month = String(d.getMonth() + 1).padStart(2, '0');
+          const date = String(d.getDate()).padStart(2, '0');
+          vDateStr = `${year}-${month}-${date}`;
+          vMonthYear = `${month}-${year}`;
+        }
+      }
+      
+      const matchSearch = searchPic.trim() === '' || 
+        (v.code && v.code.toLowerCase().includes(searchPic.toLowerCase())) ||
+        (v.customerName && v.customerName.toLowerCase().includes(searchPic.toLowerCase())) ||
+        (v.customerPhone && v.customerPhone.includes(searchPic)) ||
+        (v.redeemedBy && v.redeemedBy.toLowerCase().includes(searchPic.toLowerCase()));
+        
+      const matchMonth = filterMonth ? vMonthYear === filterMonth : true;
+      const matchDate = filterDate ? vDateStr === filterDate : true;
+      
+      return matchSearch && matchMonth && matchDate;
+    });
+  }, [vouchers, searchPic, filterMonth, filterDate]);
+
+  const filteredRedemptionsAdmin = useMemo(() => {
+    return referralRedemptions.filter(r => {
+      let rDateStr = r.date || '';
+      let rMonthYear = '';
+      if (rDateStr && rDateStr.length >= 7) {
+        const [year, month] = rDateStr.split('-');
+        if (year && month) {
+          rMonthYear = `${month}-${year}`;
+        }
+      }
+
+      const query = searchPic.trim().toLowerCase();
+      const matchSearch = query === '' ||
+        (r.partnerName && r.partnerName.toLowerCase().includes(query)) ||
+        (r.partnerPhone && r.partnerPhone.includes(query)) ||
+        (r.notes && r.notes.toLowerCase().includes(query));
+
+      const matchMonth = filterMonth ? rMonthYear === filterMonth : true;
+      const matchDate = filterDate ? rDateStr === filterDate : true;
+
+      return matchSearch && matchMonth && matchDate;
+    });
+  }, [referralRedemptions, searchPic, filterMonth, filterDate]);
+
+  const filteredReferralsAdmin = useMemo(() => {
+    return referralTransactions.filter(t => {
+      let tDateStr = t.date || '';
+      let tMonthYear = '';
+      if (tDateStr && tDateStr.length >= 7) {
+        const [year, month] = tDateStr.split('-');
+        if (year && month) {
+          tMonthYear = `${month}-${year}`;
+        }
+      }
+
+      const query = searchPic.trim().toLowerCase();
+      const matchSearch = query === '' ||
+        (t.partnerName && t.partnerName.toLowerCase().includes(query)) ||
+        (t.customerName && t.customerName.toLowerCase().includes(query)) ||
+        (t.notes && t.notes.toLowerCase().includes(query));
+
+      const matchMonth = filterMonth ? tMonthYear === filterMonth : true;
+      const matchDate = filterDate ? tDateStr === filterDate : true;
+
+      return matchSearch && matchMonth && matchDate;
+    });
+  }, [referralTransactions, searchPic, filterMonth, filterDate]);
+
+  const handleProgressFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      try {
+        const compressed = await imageCompression(file, { maxSizeMB: 1, maxWidthOrHeight: 1200 });
+        setProgressFile(compressed);
+      } catch (e) {
+        setErrorMsg('Gagal kompres gambar progress.');
+      }
+    }
+  };
+
+  const handleProgressSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedFollowupForProgress || !progressOutcome || !progressPic || !progressFile) {
+      setErrorMsg('Lengkapi data progress dan upload bukti.');
+      return;
+    }
+
+    setProgressUploading(true);
+    try {
+      // 1. Upload to Cloudinary folder "progress"
+      const formData = new FormData();
+      formData.append('screenshot', progressFile);
+      formData.append('date', progressDate);
+      formData.append('pic', progressPic);
+      formData.append('targetFolder', 'progress');
+      formData.append('customerName', selectedFollowupForProgress.customerName);
+
+      const res = await axios.post('/api/upload', formData);
+      const url = res.data.url;
+
+      // 2. Save to Firestore
+      const monthYear = progressDate.substring(5, 7) + '-' + progressDate.substring(0, 4);
+      const payload: Omit<ProgressData, 'id'> = {
+        followupId: selectedFollowupForProgress.id!,
+        customerName: selectedFollowupForProgress.customerName,
+        outcome: progressOutcome as ProgressOutcome,
+        channels: progressChannels,
+        pic: progressPic,
+        date: progressDate,
+        caption: progressCaption,
+        screenshotUrl: url,
+        monthYear,
+        timestamp: serverTimestamp()
+      };
+
+      await addDoc(collection(db, 'progress'), payload);
+      setSuccessMsg('Progress berhasil disimpan!');
+      
+      // Reset
+      setSelectedFollowupForProgress(null);
+      setProgressOutcome('');
+      setProgressChannels([]);
+      setProgressCaption('');
+      setProgressFile(null);
+    } catch (error: any) {
+      setErrorMsg(error.message || 'Gagal simpan progress.');
+    } finally {
+      setProgressUploading(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!bulkDeleteMonth) {
+      setErrorMsg('Pilih bulan & tahun.');
+      return;
+    }
+    if (!confirm(`Hapus SEMUA file Cloudinary di folder ${bulkDeleteCategory} untuk periode ${bulkDeleteMonth}?`)) return;
+
+    setIsBulkDeleting(true);
+    try {
+      await axios.post('/api/bulk-delete', { 
+        monthYear: bulkDeleteMonth, 
+        category: bulkDeleteCategory 
+      });
+      setSuccessMsg('Bulk delete berhasil dilakukan.');
+    } catch (e: any) {
+      setErrorMsg('Gagal hapus massal: ' + e.message);
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  const downloadCSV = () => {
+    let dataToExport: any[] = [];
+    let filePrefix = 'export';
+
+    if (adminCategory === 'followups') {
+      filePrefix = 'followup_awal';
+      dataToExport = filteredFollowups.map(f => ({
+        Tanggal: f.date,
+        Nama_Konsumen: f.customerName,
+        No_HP: f.customerPhone,
+        PIC: f.pic,
+        Caption: f.caption,
+        Bulan_Tahun: f.monthYear,
+        URL_Screenshot: f.screenshotUrl
+      }));
+    } else if (adminCategory === 'progress') {
+      filePrefix = 'progress_followup';
+      dataToExport = filteredProgress.map(p => ({
+        Tanggal_Progress: p.date,
+        Nama_Konsumen: p.customerName,
+        Hasil: p.outcome,
+        Media: p.channels.join(', '),
+        PIC: p.pic,
+        Keterangan: p.caption,
+        URL_Screenshot: p.screenshotUrl
+      }));
+    } else if (adminCategory === 'vouchers') {
+      filePrefix = 'data_voucher';
+      dataToExport = filteredVouchersAdmin.map(v => {
+        let createdDateStr = '-';
+        if (v.createdAt) {
+          let d: Date | null = null;
+          if (typeof v.createdAt.toDate === 'function') {
+            d = v.createdAt.toDate();
+          } else if (v.createdAt.seconds) {
+            d = new Date(v.createdAt.seconds * 1000);
+          } else if (v.createdAt instanceof Date) {
+            d = v.createdAt;
+          } else {
+            d = new Date(v.createdAt);
+          }
+          if (d && !isNaN(d.getTime())) {
+            createdDateStr = d.toLocaleString('id-ID');
+          }
+        }
+
+        return {
+          Nama_Konsumen: v.customerName || '-',
+          No_HP_Konsumen: v.customerPhone || '-',
+          Kode_Voucher: v.code,
+          Tipe_Benefit: v.type,
+          Detail_Benefit: getVoucherBenefitText(v),
+          Minimal_Transaksi: v.minTransaction || 0,
+          Masa_Berlaku: v.expiryDate,
+          Tanggal_Voucher_Dibuat: createdDateStr,
+          Tanggal_Voucher_Diredeem: v.redeemedAt || '-',
+          PIC_Penukar: v.redeemedBy || '-',
+          Status_Penggunaan: v.isRedeemed ? 'Sudah Digunakan' : 'Belum Digunakan'
+        };
+      });
+    } else if (adminCategory === 'redeem_guide') {
+      filePrefix = 'penyerahan_komisi_guide';
+      dataToExport = filteredRedemptionsAdmin.map(r => ({
+        Tanggal_Penyerahan: r.date,
+        Nama_Mitra_Guide: r.partnerName,
+        No_HP_Mitra: r.partnerPhone || '-',
+        Nominal_Komisi_Diserahkan_Rp: r.rewardAmount || 0,
+        Catatan_Penyerahan: r.notes || '-'
+      }));
+    } else if (adminCategory === 'referrals') {
+      filePrefix = 'transaksi_rekomendasi';
+      dataToExport = filteredReferralsAdmin.map(t => ({
+        Tanggal_Transaksi: t.date,
+        Nama_Mitra_Guide: t.partnerName,
+        Nama_Konsumen: t.customerName || '-',
+        Total_Transaksi_Rp: t.amount || 0,
+        Komisi_Fee_Rp: typeof t.commissionAmount === 'number' ? t.commissionAmount : ((t.pointsEarned || 0) * 10000),
+        Catatan: t.notes || '-'
+      }));
+    }
+
+    const csv = Papa.unparse(dataToExport);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${filePrefix}_export_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Voucher Handlers
+  const generateVoucherCode = (prefix = 'DINA') => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let randomPart = '';
+    for (let i = 0; i < 6; i++) {
+      randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return `${prefix}-${randomPart}`;
+  };
+
+  const handleGenerateVouchers = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!genVoucherValue.trim()) {
+      setErrorMsg('Nilai benefit tidak boleh kosong.');
+      return;
+    }
+    
+    setIsGeneratingVouchers(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    try {
+      const batchPromises = [];
+      const createdCodes: string[] = [];
+      
+      for (let i = 0; i < genQuantity; i++) {
+        let uniqueCode = '';
+        let isUnique = false;
+        let attempts = 0;
+        
+        while (!isUnique && attempts < 10) {
+          uniqueCode = generateVoucherCode();
+          const exists = vouchers.some(v => v.code === uniqueCode) || createdCodes.includes(uniqueCode);
+          if (!exists) {
+            isUnique = true;
+          }
+          attempts++;
+        }
+        
+        createdCodes.push(uniqueCode);
+
+        const payload = {
+          code: uniqueCode,
+          type: genVoucherType,
+          value: genVoucherValue.trim(),
+          minTransaction: Number(genMinTransaction) || 0,
+          expiryDate: genExpiryDate,
+          isRedeemed: false,
+          customerName: genCustomerName.trim() || null,
+          customerPhone: genCustomerPhone.trim() || null,
+          createdAt: serverTimestamp(),
+          redeemedAt: null,
+          redeemedBy: null
+        };
+        
+        batchPromises.push(addDoc(collection(db, 'vouchers'), payload));
+      }
+
+      await Promise.all(batchPromises);
+      setSuccessMsg(`Berhasil membuat ${genQuantity} voucher baru!`);
+      
+      // Reset form
+      setGenVoucherValue('');
+      setGenMinTransaction(0);
+      setGenCustomerName('');
+      setGenCustomerPhone('');
+      setGenQuantity(1);
+    } catch (err: any) {
+      console.error('Error generating vouchers:', err);
+      handleFirestoreError(err, OperationType.CREATE, 'vouchers');
+    } finally {
+      setIsGeneratingVouchers(false);
+    }
+  };
+
+  const handleSearchVoucher = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmedCode = voucherCodeInput.trim().toUpperCase();
+    if (!trimmedCode) {
+      setScannedVoucher(null);
+      setVoucherSearchStatus('idle');
+      return;
+    }
+
+    setIsSearchingVoucher(true);
+    const found = vouchers.find(v => v.code === trimmedCode);
+    
+    if (found) {
+      setScannedVoucher(found);
+      setVoucherSearchStatus('found');
+      setVoucherRedeemCustomerName(found.customerName || '');
+      setVoucherRedeemCustomerPhone(found.customerPhone || '');
+    } else {
+      setScannedVoucher(null);
+      setVoucherSearchStatus('not_found');
+    }
+    setIsSearchingVoucher(false);
+  };
+
+  const handleRedeemVoucher = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!scannedVoucher || !scannedVoucher.id) return;
+    if (!voucherRedeemPic.trim()) {
+      setErrorMsg('Nama PIC Penukar wajib diisi.');
+      return;
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (scannedVoucher.expiryDate < todayStr) {
+      setErrorMsg('Voucher ini sudah kedaluwarsa dan tidak bisa digunakan.');
+      return;
+    }
+
+    try {
+      const voucherRef = doc(db, 'vouchers', scannedVoucher.id);
+      await updateDoc(voucherRef, {
+        isRedeemed: true,
+        redeemedAt: new Date().toISOString(),
+        redeemedBy: voucherRedeemPic.trim(),
+        customerName: voucherRedeemCustomerName.trim() || scannedVoucher.customerName,
+        customerPhone: voucherRedeemCustomerPhone.trim() || scannedVoucher.customerPhone
+      });
+
+      setSuccessMsg(`Voucher ${scannedVoucher.code} berhasil ditukarkan!`);
+      
+      // Reset input fields
+      setVoucherRedeemPic('');
+      setVoucherRedeemCustomerName('');
+      setVoucherRedeemCustomerPhone('');
+      setVoucherCodeInput('');
+      setVoucherSearchStatus('idle');
+      setScannedVoucher(null);
+    } catch (err: any) {
+      console.error('Error redeeming voucher:', err);
+      handleFirestoreError(err, OperationType.UPDATE, 'vouchers');
+    }
+  };
+
+  const handleDeleteVoucher = async (id: string) => {
+    if (!confirm('Apakah Anda yakin ingin menghapus voucher ini?')) return;
+    try {
+      await deleteDoc(doc(db, 'vouchers', id));
+      setSuccessMsg('Voucher berhasil dihapus.');
+      if (scannedVoucher?.id === id) {
+        setScannedVoucher(null);
+        setVoucherSearchStatus('idle');
+      }
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.DELETE, 'vouchers');
+    }
+  };
+
+  const handlePrintVoucher = () => {
+    const printContent = document.getElementById('printable-voucher-card');
+    if (!printContent) return;
+    
+    const printWindow = window.open('', '', 'height=600,width=800');
+    if (printWindow) {
+      printWindow.document.write('<html><head><title>Cetak Voucher Dina Laundry</title>');
+      printWindow.document.write('<style>');
+      printWindow.document.write(`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Playfair+Display:ital,wght@0,700;1,400&display=swap');
+        body { font-family: 'Inter', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: white; }
+        .voucher-card { 
+          border: 3px dashed #1e293b; 
+          padding: 32px; 
+          border-radius: 16px; 
+          max-width: 450px; 
+          text-align: center; 
+          box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+          background-color: #fafaf9;
+        }
+        .header { 
+          font-family: 'Playfair Display', serif; 
+          font-size: 28px; 
+          font-weight: 800; 
+          color: #1e293b; 
+          letter-spacing: -0.02em;
+          margin-bottom: 4px;
+        }
+        .subheader { 
+          font-size: 11px; 
+          color: #64748b; 
+          text-transform: uppercase;
+          letter-spacing: 0.15em;
+          margin-bottom: 24px; 
+          font-weight: 600;
+        }
+        .benefit-badge {
+          background-color: #0f172a;
+          color: white;
+          padding: 6px 14px;
+          border-radius: 9999px;
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          display: inline-block;
+          margin-bottom: 12px;
+        }
+        .benefit-val { 
+          font-size: 36px; 
+          font-weight: 800; 
+          color: #1e293b; 
+          margin: 8px 0; 
+          letter-spacing: -0.04em; 
+          font-family: 'Playfair Display', serif;
+        }
+        .code-box { 
+          font-family: monospace; 
+          font-size: 20px; 
+          font-weight: bold; 
+          background-color: #f1f5f9; 
+          padding: 8px 16px; 
+          border: 1px solid #cbd5e1;
+          border-radius: 8px; 
+          display: inline-block; 
+          margin-bottom: 16px; 
+          letter-spacing: 0.05em;
+          color: #0f172a;
+        }
+        .expiry { 
+          font-size: 11px; 
+          color: #475569; 
+          font-weight: 500;
+          margin-bottom: 12px; 
+        }
+        .barcode-container {
+          margin: 20px auto;
+          display: flex;
+          justify-content: center;
+        }
+        .terms { 
+          font-size: 9px; 
+          color: #94a3b8; 
+          line-height: 1.5; 
+          border-top: 1px solid #e2e8f0;
+          padding-top: 16px;
+          margin-top: 16px;
+        }
+        @media print {
+          body { background: none; }
+          .voucher-card { box-shadow: none; border-color: #000; }
+        }
+      `);
+      printWindow.document.write('<style>');
+      printWindow.document.write('</head><body>');
+      printWindow.document.write(printContent.outerHTML);
+      printWindow.document.write('</body></html>');
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => {
+        printWindow.print();
+        printWindow.close();
+      }, 500);
+    }
+  };
+
+  const handleShareVoucher = async () => {
+    const cardElement = document.getElementById('printable-voucher-card');
+    if (!cardElement || !selectedVoucherForPrint) {
+      setErrorMsg('Voucher tidak ditemukan untuk dibagikan.');
+      return;
+    }
+
+    try {
+      // Create a canvas with high quality
+      const canvas = await html2canvas(cardElement, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+      });
+
+      // Convert to blob
+      canvas.toBlob(async (blob) => {
+        if (!blob || !selectedVoucherForPrint) {
+          setErrorMsg('Gagal memproses gambar voucher.');
+          return;
+        }
+
+        const file = new File([blob], `voucher-${selectedVoucherForPrint.code}.png`, { type: 'image/png' });
+        const benefitText = getVoucherBenefitText(selectedVoucherForPrint);
+
+        const textMessage = `*DINA LAUNDRY - Luxurious Laundry* 🧺✨\n\nHalo! Kami mengirimkan voucher promo spesial untuk Anda:\n🎁 *Benefit*: ${benefitText}\n🎫 *Kode Voucher*: *${selectedVoucherForPrint.code}*\n📅 *Berlaku hingga*: ${selectedVoucherForPrint.expiryDate}\n${selectedVoucherForPrint.minTransaction > 0 ? `🛒 *Min. Transaksi*: Rp ${selectedVoucherForPrint.minTransaction.toLocaleString()}\n` : ''}\nHarap tunjukkan barcode/kode voucher ini saat melakukan transaksi di Dina Laundry. Terima kasih! ❤️`;
+
+        // Copy text to clipboard so it's ready to paste
+        try {
+          await navigator.clipboard.writeText(textMessage);
+        } catch (clipErr) {
+          console.warn("Clipboard write failed:", clipErr);
+        }
+
+        // Try utilizing Web Share API if supported by browser (e.g. mobile chrome/safari)
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({
+              files: [file],
+              title: `Voucher Dina Laundry - ${selectedVoucherForPrint.code}`,
+              text: textMessage,
+            });
+            setSuccessMsg('Voucher berhasil dibagikan!');
+            return;
+          } catch (shareErr: any) {
+            if (shareErr.name === 'AbortError') {
+              console.log('User cancelled sharing');
+              return;
+            }
+            console.warn("Web Share failed, falling back to download & WhatsApp link:", shareErr);
+          }
+        }
+
+        // Standard Fallback: Download file directly + Open WhatsApp prefilled chat
+        const downloadLink = document.createElement('a');
+        downloadLink.href = URL.createObjectURL(blob);
+        downloadLink.download = `voucher-${selectedVoucherForPrint.code}.png`;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+
+        let whatsappUrl = 'https://api.whatsapp.com/send';
+        const phone = selectedVoucherForPrint.customerPhone || '';
+        if (phone) {
+          let cleanedPhone = phone.replace(/\D/g, '');
+          if (cleanedPhone.startsWith('0')) {
+            cleanedPhone = '62' + cleanedPhone.substring(1);
+          }
+          whatsappUrl += `?phone=${cleanedPhone}&text=${encodeURIComponent(textMessage)}`;
+        } else {
+          whatsappUrl += `?text=${encodeURIComponent(textMessage)}`;
+        }
+
+        window.open(whatsappUrl, '_blank');
+        setSuccessMsg('Gambar voucher diunduh & teks promo disalin! Silakan paste gambar & kirim di WhatsApp.');
+      }, 'image/png');
+
+    } catch (err: any) {
+      console.error('Error sharing voucher:', err);
+      setErrorMsg('Gagal memproses gambar voucher: ' + err.message);
+    }
+  };
+
+  const filteredVouchers = useMemo(() => {
+    return vouchers.filter(v => {
+      const searchLower = voucherListSearch.toLowerCase().trim();
+      if (!searchLower) return true; // If no search query, show all that match status filter
+
+      const matchSearch = 
+        (v.code && v.code.toLowerCase().includes(searchLower)) ||
+        (v.customerName && v.customerName.toLowerCase().includes(searchLower)) ||
+        (v.customerPhone && v.customerPhone.toLowerCase().includes(searchLower));
+        
+      if (!matchSearch) return false;
+      return true;
+    }).filter(v => {
+      const todayStr = new Date().toISOString().split('T')[0];
+      if (voucherListFilterStatus === 'active') {
+        return !v.isRedeemed && v.expiryDate >= todayStr;
+      } else if (voucherListFilterStatus === 'redeemed') {
+        return v.isRedeemed;
+      } else if (voucherListFilterStatus === 'expired') {
+        return !v.isRedeemed && v.expiryDate < todayStr;
+      }
+      return true;
+    });
+  }, [vouchers, voucherListSearch, voucherListFilterStatus]);
+
+  // Referral Handlers & Logic
+  const partnerStatsMap = useMemo(() => {
+    const map: Record<string, {
+      totalTxAmount: number;
+      txCount: number;
+      totalDeductedTxAmount: number;
+      remainingUnsettledTx: number;
+      totalCommissionPaid: number;
+    }> = {};
+
+    referralPartners.forEach(p => {
+      if (p.id) {
+        map[p.id] = {
+          totalTxAmount: 0,
+          txCount: 0,
+          totalDeductedTxAmount: 0,
+          remainingUnsettledTx: 0,
+          totalCommissionPaid: 0,
+        };
+      }
+    });
+
+    referralTransactions.forEach(t => {
+      if (map[t.partnerId]) {
+        map[t.partnerId].totalTxAmount += (Number(t.amount) || 0);
+        map[t.partnerId].txCount += 1;
+      }
+    });
+
+    referralRedemptions.forEach(r => {
+      if (map[r.partnerId]) {
+        map[r.partnerId].totalDeductedTxAmount += (Number(r.deductedTxAmount) || 0);
+        map[r.partnerId].totalCommissionPaid += (Number(r.rewardAmount) || 0);
+      }
+    });
+
+    Object.keys(map).forEach(pId => {
+      map[pId].remainingUnsettledTx = Math.max(0, map[pId].totalTxAmount - map[pId].totalDeductedTxAmount);
+    });
+
+    return map;
+  }, [referralPartners, referralTransactions, referralRedemptions]);
+
+  const activeMatchedPartner = useMemo(() => {
+    if (transPartnerId) {
+      return referralPartners.find(p => p.id === transPartnerId) || null;
+    }
+    const queryStr = transPartnerInput.trim().toLowerCase();
+    if (!queryStr) return null;
+
+    const numOnly = queryStr.replace(/\D/g, '');
+    return referralPartners.find(p => {
+      const pName = p.name.toLowerCase();
+      const pPhone = p.phone.replace(/\D/g, '');
+      return pName.includes(queryStr) || (numOnly.length >= 3 && pPhone.includes(numOnly));
+    }) || null;
+  }, [transPartnerId, transPartnerInput, referralPartners]);
+
+  const handleSavePartner = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!partnerName.trim() || !partnerPhone.trim()) {
+      setErrorMsg('Nama dan Nomor HP/WA Pemberi Rekomendasi wajib diisi.');
+      return;
+    }
+
+    setIsSavingPartner(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    try {
+      if (editingPartnerId) {
+        await updateDoc(doc(db, 'referral_partners', editingPartnerId), {
+          name: partnerName.trim(),
+          phone: partnerPhone.trim(),
+          role: partnerRole.trim(),
+          notes: partnerNotes.trim()
+        });
+        setSuccessMsg(`Data mitra ${partnerName} berhasil diperbarui.`);
+      } else {
+        const docRef = await addDoc(collection(db, 'referral_partners'), {
+          name: partnerName.trim(),
+          phone: partnerPhone.trim(),
+          role: partnerRole.trim(),
+          notes: partnerNotes.trim(),
+          createdAt: serverTimestamp()
+        });
+        setSuccessMsg(`Pemberi rekomendasi ${partnerName} berhasil didaftarkan!`);
+        
+        if (showQuickPartnerModal) {
+          setTransPartnerId(docRef.id);
+          setTransPartnerInput(partnerName.trim());
+        }
+      }
+
+      setPartnerName('');
+      setPartnerPhone('');
+      setPartnerRole('Tour Guide');
+      setPartnerNotes('');
+      setEditingPartnerId(null);
+      setShowQuickPartnerModal(false);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Gagal menyimpan data mitra.');
+    } finally {
+      setIsSavingPartner(false);
+    }
+  };
+
+  const handleEditPartner = (p: ReferralPartner) => {
+    setEditingPartnerId(p.id || null);
+    setPartnerName(p.name);
+    setPartnerPhone(p.phone);
+    setPartnerRole(p.role || 'Tour Guide');
+    setPartnerNotes(p.notes || '');
+    setReferralSubTab('partners');
+    setShowQuickPartnerModal(true);
+  };
+
+  const handleDeletePartner = async (partnerId: string, name: string) => {
+    if (!confirm(`Hapus mitra "${name}" dari database? Data transaksi dan histori mitra ini akan tetap tersimpan.`)) return;
+    try {
+      await deleteDoc(doc(db, 'referral_partners', partnerId));
+      setSuccessMsg(`Mitra ${name} telah dihapus.`);
+    } catch (err: any) {
+      setErrorMsg('Gagal menghapus mitra.');
+    }
+  };
+
+  const handleSaveReferralTransaction = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    let targetPartner = activeMatchedPartner;
+    if (!targetPartner && transPartnerId) {
+      targetPartner = referralPartners.find(p => p.id === transPartnerId) || null;
+    }
+
+    if (!targetPartner) {
+      setErrorMsg('Pilih atau daftarkan pemberi rekomendasi terlebih dahulu.');
+      return;
+    }
+
+    if (!transCustomerName.trim() || !transAmount || Number(transAmount) <= 0) {
+      setErrorMsg('Nama konsumen/tamu dan nilai transaksi harus diisi dengan benar.');
+      return;
+    }
+
+    setIsSavingTrans(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    try {
+      const amountNum = Number(transAmount);
+
+      await addDoc(collection(db, 'referral_transactions'), {
+        partnerId: targetPartner.id,
+        partnerName: targetPartner.name,
+        partnerPhone: targetPartner.phone,
+        date: transDate,
+        customerName: transCustomerName.trim(),
+        amount: amountNum,
+        notes: transNotes.trim(),
+        createdAt: serverTimestamp()
+      });
+
+      setSuccessMsg(`Transaksi Rp ${amountNum.toLocaleString('id-ID')} berhasil dicatat untuk ${targetPartner.name}!`);
+
+      setTransCustomerName('');
+      setTransAmount('');
+      setTransNotes('');
+      setTransPartnerId('');
+      setTransPartnerInput('');
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Gagal menyimpan transaksi.');
+    } finally {
+      setIsSavingTrans(false);
+    }
+  };
+
+  const handleDeleteReferralTransaction = async (transId: string) => {
+    if (!confirm('Hapus pencatatan transaksi rekomendasi ini?')) return;
+    try {
+      await deleteDoc(doc(db, 'referral_transactions', transId));
+      setSuccessMsg('Transaksi berhasil dihapus.');
+    } catch (err: any) {
+      setErrorMsg('Gagal menghapus transaksi.');
+    }
+  };
+
+  const getWhatsAppShareUrl = (r: ReferralRedemption) => {
+    let cleanPhone = (r.partnerPhone || '').replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) {
+      cleanPhone = '62' + cleanPhone.slice(1);
+    }
+    const receiptNo = `INV-FEE-${(r.id || '').slice(-6).toUpperCase() || '001'}`;
+    const text = `*KUITANSI PENYERAHAN FEE GUIDE* 🧾
+--------------------------------------------
+*DINA LAUNDRY - SISTEM REFERRAL*
+
+*No. Invoice:* ${receiptNo}
+*Tanggal:* ${r.date}
+*Pemberi Rekomendasi:* ${r.partnerName} (${r.partnerPhone})
+
+*RINCIAN PENYERAHAN KOMISI:*
+• *Transaksi Diperhitungkan:* Rp ${Number(r.deductedTxAmount || 0).toLocaleString('id-ID')}
+• *NOMINAL FEE / KOMISI DISERAHKAN:* *Rp ${Number(r.rewardAmount || 0).toLocaleString('id-ID')}*
+• *Catatan / Keterangan:* ${r.notes || 'Penyerahan komisi tunai'}
+• *Status:* SUCCESS / LUNAS
+
+Terima kasih banyak atas kerja sama dan rekomendasi tamu / konsumen ke Dina Laundry! 🙏✨
+Salam hangat,
+*Staff Dina Laundry*`;
+
+    return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+  };
+
+  const copyWhatsAppText = (r: ReferralRedemption) => {
+    const receiptNo = `INV-FEE-${(r.id || '').slice(-6).toUpperCase() || '001'}`;
+    const text = `*KUITANSI PENYERAHAN FEE GUIDE* 🧾
+--------------------------------------------
+*DINA LAUNDRY - SISTEM REFERRAL*
+
+*No. Invoice:* ${receiptNo}
+*Tanggal:* ${r.date}
+*Pemberi Rekomendasi:* ${r.partnerName} (${r.partnerPhone})
+
+*RINCIAN PENYERAHAN KOMISI:*
+• *Transaksi Diperhitungkan:* Rp ${Number(r.deductedTxAmount || 0).toLocaleString('id-ID')}
+• *NOMINAL FEE / KOMISI DISERAHKAN:* *Rp ${Number(r.rewardAmount || 0).toLocaleString('id-ID')}*
+• *Catatan / Keterangan:* ${r.notes || 'Penyerahan komisi tunai'}
+• *Status:* SUCCESS / LUNAS
+
+Terima kasih banyak atas kerja sama dan rekomendasi tamu / konsumen ke Dina Laundry! 🙏✨
+Salam hangat,
+*Staff Dina Laundry*`;
+
+    navigator.clipboard.writeText(text);
+    setCopiedWaText(true);
+    setTimeout(() => setCopiedWaText(false), 2000);
+  };
+
+  const handleDownloadPdf = async (r: ReferralRedemption) => {
+    const element = document.getElementById('printable-receipt-area');
+    if (!element) return;
+    try {
+      setIsGeneratingPdf(true);
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff'
+      });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+
+      pdf.addImage(imgData, 'PNG', 0, 10, pdfWidth, Math.min(pdfHeight, 270));
+      const invNo = (r.id || '001').slice(-6).toUpperCase();
+      pdf.save(`Kuitansi-Fee-DinaLaundry-${invNo}.pdf`);
+    } catch (err) {
+      console.error('Gagal membuat file PDF:', err);
+      alert('Gagal mengunduh PDF secara otomatis. Mencoba membuka jendela cetak...');
+      handlePrintInNewWindow(r);
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  };
+
+  const handlePrintInNewWindow = (r: ReferralRedemption) => {
+    const element = document.getElementById('printable-receipt-area');
+    if (!element) {
+      window.print();
+      return;
+    }
+    const invNo = (r.id || '001').slice(-6).toUpperCase();
+    const printWindow = window.open('', '_blank', 'width=800,height=900');
+    if (printWindow) {
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Kuitansi Fee Dina Laundry - INV-FEE-${invNo}</title>
+            <style>
+              body { font-family: system-ui, -apple-system, sans-serif; padding: 24px; color: #1f2937; background: #fff; }
+              #printable-receipt-area { max-width: 600px; margin: 0 auto; border: 1px solid #e5e7eb; padding: 24px; border-radius: 16px; }
+              .bg-white { background: #fff; }
+              .p-6, .p-8 { padding: 20px; }
+              .rounded-2xl { border-radius: 16px; }
+              .rounded-xl { border-radius: 12px; }
+              .rounded-lg { border-radius: 8px; }
+              .border { border: 1px solid #e5e7eb; }
+              .border-b-2 { border-bottom: 2px solid #059669; }
+              .border-b { border-bottom: 1px solid #e5e7eb; }
+              .border-t { border-top: 1px solid #e5e7eb; }
+              .text-emerald-900 { color: #064e3b; }
+              .text-emerald-800 { color: #065f46; }
+              .text-emerald-700 { color: #047857; }
+              .bg-emerald-100 { background-color: #d1fae5; }
+              .bg-emerald-50 { background-color: #ecfdf5; }
+              .bg-amber-100 { background-color: #fef3c7; }
+              .text-amber-900 { color: #78350f; }
+              .bg-gray-50 { background-color: #f9fafb; }
+              .flex { display: flex; }
+              .justify-between { justify-content: space-between; }
+              .items-start { align-items: flex-start; }
+              .items-center { align-items: center; }
+              .justify-center { justify-content: center; }
+              .text-right { text-align: right; }
+              .text-center { text-align: center; }
+              .font-bold { font-weight: 700; }
+              .font-black { font-weight: 900; }
+              .font-medium { font-weight: 500; }
+              .text-xs { font-size: 12px; }
+              .text-sm { font-size: 14px; }
+              .text-base { font-size: 16px; }
+              .text-lg { font-size: 18px; }
+              .text-xl { font-size: 20px; }
+              .grid { display: grid; }
+              .grid-cols-2 { grid-template-columns: 1fr 1fr; }
+              .gap-2 { gap: 8px; }
+              .gap-4 { gap: 16px; }
+              .space-y-6 > * + * { margin-top: 24px; }
+              .space-y-2 > * + * { margin-top: 8px; }
+              .space-y-1 > * + * { margin-top: 4px; }
+              .italic { font-style: italic; }
+              .no-print { display: none !important; }
+              @media print {
+                body { padding: 0; }
+                #printable-receipt-area { border: none; padding: 0; }
+              }
+            </style>
+          </head>
+          <body>
+            ${element.outerHTML}
+            <script>
+              setTimeout(() => {
+                window.print();
+              }, 400);
+            </script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    } else {
+      window.print();
+    }
+  };
+
+  const getPartnerReminderText = (partner: ReferralPartner) => {
+    const stats = partnerStatsMap[partner.id!] || {
+      totalTxAmount: 0,
+      txCount: 0,
+      totalDeductedTxAmount: 0,
+      remainingUnsettledTx: 0,
+      totalCommissionPaid: 0
+    };
+
+    return `*REMINDER REKOMENDASI DINA LAUNDRY* 🧺✨
+------------------------------------------------
+Halo *${partner.name}* (${partner.role || 'Pemberi Rekomendasi'}) 👋,
+
+Salam hangat dari *Dina Laundry*! 
+
+Terima kasih banyak atas kerja sama dan kepercayaannya dalam merekomendasikan konsumen / tamu Anda ke tempat kami. 
+
+Berikut ringkasan akumulasi rekomendasi Anda saat ini:
+📊 *Total Rekomendasi Konsumen:* Rp ${stats.totalTxAmount.toLocaleString('id-ID')} (${stats.txCount} x transaksi)
+⏳ *Sisa Transaksi Belum Diperhitungkan:* *Rp ${stats.remainingUnsettledTx.toLocaleString('id-ID')}*
+✅ *Sudah Diperhitungkan / Diklaim:* Rp ${stats.totalDeductedTxAmount.toLocaleString('id-ID')}
+💰 *Total Fee / Komisi Diserahkan:* Rp ${stats.totalCommissionPaid.toLocaleString('id-ID')}
+
+Yuk tingkatkan terus rekomendasi customer Anda ke Dina Laundry agar akumulasi transaksi makin besar & bonus komisi yang bisa diklaim semakin melimpah! 🚀💸
+
+Jika ada konsumen atau tamu rombongan yang butuh laundry cepat & bersih, langsung hubungi Dina Laundry ya. Terima kasih banyak! 🙏✨`;
+  };
+
+  const getPartnerReminderWaUrl = (partner: ReferralPartner) => {
+    let cleanPhone = (partner.phone || '').replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) {
+      cleanPhone = '62' + cleanPhone.slice(1);
+    }
+    const text = getPartnerReminderText(partner);
+    return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+  };
+
+  const copyPartnerReminderText = (partner: ReferralPartner) => {
+    const text = getPartnerReminderText(partner);
+    navigator.clipboard.writeText(text);
+    setCopiedReminderWaText(true);
+    setTimeout(() => setCopiedReminderWaText(false), 2000);
+  };
+
+  const handleSaveRedemption = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    const partner = referralPartners.find(p => p.id === redeemPartnerId);
+    if (!partner || !redeemPartnerId) {
+      setErrorMsg('Pilih pemberi rekomendasi.');
+      return;
+    }
+
+    const deductedVal = Number(deductedTxInput);
+    const rewardVal = Number(redeemRewardInput);
+
+    if (isNaN(deductedVal) || deductedVal < 0) {
+      setErrorMsg('Nilai pengurang akumulasi transaksi harus diisi dengan nominal Rupiah yang valid (minimal Rp 0).');
+      return;
+    }
+
+    if (!rewardVal || rewardVal <= 0) {
+      setErrorMsg('Nominal komisi / fee yang diserahkan harus lebih dari Rp 0.');
+      return;
+    }
+
+    setIsSavingRedemption(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    try {
+      const docRef = await addDoc(collection(db, 'referral_redemptions'), {
+        partnerId: partner.id,
+        partnerName: partner.name,
+        partnerPhone: partner.phone,
+        date: redeemDate,
+        deductedTxAmount: deductedVal,
+        rewardAmount: rewardVal,
+        notes: redeemNotesInput.trim(),
+        createdAt: serverTimestamp()
+      });
+
+      const newRedemption: ReferralRedemption = {
+        id: docRef.id,
+        partnerId: partner.id,
+        partnerName: partner.name,
+        partnerPhone: partner.phone,
+        date: redeemDate,
+        deductedTxAmount: deductedVal,
+        rewardAmount: rewardVal,
+        notes: redeemNotesInput.trim(),
+        createdAt: new Date()
+      };
+
+      setSuccessMsg(`Penyerahan komisi Rp ${rewardVal.toLocaleString('id-ID')} (Pengurang Transaksi Rp ${deductedVal.toLocaleString('id-ID')}) untuk ${partner.name} berhasil dicatat!`);
+
+      setDeductedTxInput('');
+      setRedeemRewardInput('');
+      setRedeemNotesInput('');
+      setShowRedeemModal(false);
+
+      // Open receipt modal automatically
+      setSelectedRedemptionReceipt(newRedemption);
+      setShowReceiptModal(true);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Gagal menyimpan penyerahan komisi.');
+    } finally {
+      setIsSavingRedemption(false);
+    }
+  };
+
+  const handleDeleteRedemption = async (redemptionId: string) => {
+    if (!confirm('Hapus riwayat penyerahan komisi ini?')) return;
+    try {
+      await deleteDoc(doc(db, 'referral_redemptions', redemptionId));
+      setSuccessMsg('Penyerahan komisi berhasil dibatalkan/dihapus.');
+    } catch (err: any) {
+      setErrorMsg('Gagal menghapus data penyerahan komisi.');
+    }
+  };
+
+  const exportReferralPartnersCSV = () => {
+    const data = referralPartners.map(p => {
+      const stats = partnerStatsMap[p.id!] || {
+        totalTxAmount: 0,
+        txCount: 0,
+        totalDeductedTxAmount: 0,
+        remainingUnsettledTx: 0,
+        totalCommissionPaid: 0
+      };
+      return {
+        ID_Mitra: p.id || '-',
+        Nama_Pemberi_Rekomendasi: p.name,
+        No_HP_WA: p.phone,
+        Pekerjaan_Role: p.role || '-',
+        Catatan: p.notes || '-',
+        Jumlah_Transaksi_Laundry: stats.txCount,
+        Total_Akumulasi_Transaksi_Rp: stats.totalTxAmount,
+        Akumulasi_Transaksi_Sudah_Diperhitungkan_Rp: stats.totalDeductedTxAmount,
+        Sisa_Akumulasi_Belum_Diperhitungkan_Rp: stats.remainingUnsettledTx,
+        Total_Komisi_Fee_Diserahkan_Rp: stats.totalCommissionPaid
+      };
+    });
+
+    const csv = Papa.unparse(data);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `database_mitra_rekomendasi_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportReferralTransactionsCSV = () => {
+    const data = referralTransactions.map(t => ({
+      ID_Transaksi: t.id || '-',
+      Tanggal_Transaksi: t.date,
+      Nama_Pemberi_Rekomendasi: t.partnerName,
+      No_HP_Pemberi_Rekomendasi: t.partnerPhone,
+      Nama_Konsumen_Tamu: t.customerName,
+      Nilai_Transaksi_Rp: t.amount,
+      Catatan: t.notes || '-'
+    }));
+
+    const csv = Papa.unparse(data);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `transaksi_rekomendasi_laundry_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportReferralRedemptionsCSV = () => {
+    const data = referralRedemptions.map(r => ({
+      ID_Redeem: r.id || '-',
+      Tanggal_Penyerahan: r.date,
+      Nama_Pemberi_Rekomendasi: r.partnerName,
+      No_HP_Pemberi_Rekomendasi: r.partnerPhone,
+      Pengurang_Akumulasi_Transaksi_Rp: r.deductedTxAmount || 0,
+      Nominal_Komisi_Fee_Diserahkan_Rp: r.rewardAmount || 0,
+      Catatan_Bukti: r.notes || '-'
+    }));
+
+    const csv = Papa.unparse(data);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `histori_redeem_poin_rekomendasi_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="flex flex-col md:flex-row h-screen w-full bg-natural-bg overflow-hidden font-sans">
+      {/* Mobile Top Navigation */}
+      <header className="flex md:hidden flex-col border-b border-natural-border bg-white px-4 py-2.5 gap-2.5 w-full shrink-0 z-10 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-natural-primary rounded-lg flex items-center justify-center">
+              <CheckCircle2 className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="font-serif text-sm font-bold text-natural-text-dark leading-tight">Dina Laundry CS Tracking</h1>
+              <p className="text-[8px] text-natural-text-muted uppercase tracking-wider">CS Follow-up Tracker</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-50 rounded-lg border border-gray-100">
+            <div className="w-5 h-5 rounded-full bg-natural-border flex items-center justify-center text-natural-text-dark font-bold text-[9px]">GP</div>
+            <span className="text-[9px] font-semibold text-natural-text-dark">Gean</span>
+          </div>
+        </div>
+        
+        {/* Horizontal scrollable category list */}
+        <nav 
+          className="flex items-center gap-2 overflow-x-auto py-0.5 -mx-4 px-4"
+          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
+          {CATEGORIES.map((cat, idx) => {
+            const isActive = activeTab === cat;
+            return (
+              <button
+                key={`nav-item-mobile-${cat}`}
+                onClick={() => {
+                  setActiveTab(cat);
+                  handleCancelEdit();
+                }}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all active:scale-[0.97] ${
+                  isActive 
+                  ? 'bg-natural-primary text-white shadow-md shadow-natural-primary/10' 
+                  : 'bg-gray-50 text-natural-text-muted border border-gray-100 hover:bg-gray-100'
+                }`}
+              >
+                {idx === 0 ? <MessageSquare className="w-3.5 h-3.5" /> : idx === 1 ? <CheckCircle2 className="w-3.5 h-3.5" /> : idx === 2 ? <Tag className="w-3.5 h-3.5" /> : <ListFilter className="w-3.5 h-3.5" />}
+                {cat}
+              </button>
+            );
+          })}
+        </nav>
+      </header>
+
+      {/* Sidebar for Desktop */}
+      <aside className="hidden md:flex md:w-64 border-r border-natural-border bg-white p-6 flex flex-col justify-between overflow-y-auto shrink-0">
+        <div className="space-y-8">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-natural-primary rounded-xl flex items-center justify-center">
+              <CheckCircle2 className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h1 className="font-serif text-lg font-bold text-natural-text-dark leading-none">Dina Laundry CS Tracking</h1>
+              <p className="text-[10px] text-natural-text-muted uppercase tracking-wider mt-1">CS Follow-up Tracker</p>
+            </div>
+          </div>
+          
+            <nav className="space-y-1">
+            {CATEGORIES.map((cat, idx) => (
+              <button
+                key={`nav-item-${cat}`}
+                onClick={() => {
+                  setActiveTab(cat);
+                  handleCancelEdit();
+                }}
+                className={`w-full sidebar-link-natural text-left gap-3 ${
+                  activeTab === cat 
+                  ? 'bg-natural-border text-natural-text-dark' 
+                  : 'text-natural-sidebar-link hover:bg-gray-50'
+                }`}
+              >
+                {idx === 0 ? <MessageSquare className="w-5 h-5" /> : idx === 1 ? <CheckCircle2 className="w-5 h-5" /> : idx === 2 ? <Tag className="w-5 h-5" /> : <ListFilter className="w-5 h-5" />}
+                {cat}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        <div className="mt-8 p-4 bg-gray-50 rounded-2xl border border-natural-border">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-natural-border flex items-center justify-center text-natural-text-dark font-bold text-xs">GP</div>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-natural-text-dark truncate">Gean Pratama</p>
+              <p className="text-[10px] text-natural-text-muted">Created By</p>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 p-6 md:p-10 overflow-y-auto">
+        {/* Global Messages */}
+        <div className="max-w-7xl mx-auto mb-6">
+          <AnimatePresence>
+            {successMsg && (
+              <motion.div 
+                initial={{ opacity: 0, y: -20 }} 
+                animate={{ opacity: 1, y: 0 }} 
+                exit={{ opacity: 0 }}
+                className="mb-4 p-4 bg-green-50 border border-green-100 text-green-700 text-sm rounded-xl font-medium flex items-center gap-3"
+              >
+                <CheckCircle2 className="w-5 h-5 text-green-500" />
+                <span>{successMsg}</span>
+                <button onClick={() => setSuccessMsg('')} className="ml-auto opacity-50 hover:opacity-100"><X className="w-4 h-4" /></button>
+              </motion.div>
+            )}
+            {errorMsg && (
+              <motion.div 
+                initial={{ opacity: 0, y: -20 }} 
+                animate={{ opacity: 1, y: 0 }} 
+                exit={{ opacity: 0 }}
+                className="mb-4 p-4 bg-red-50 border border-red-100 text-red-700 text-sm rounded-xl font-medium flex items-center gap-3"
+              >
+                <AlertCircle className="w-5 h-5 text-red-500" />
+                <span className="truncate max-w-md">{errorMsg}</span>
+                <button onClick={() => setErrorMsg('')} className="ml-auto opacity-50 hover:opacity-100"><X className="w-4 h-4" /></button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Image Preview Modal */}
+        <AnimatePresence>
+          {previewImageUrl && (
+            <div 
+              className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md cursor-zoom-out"
+              onClick={() => setPreviewImageUrl(null)}
+            >
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="relative max-w-4xl w-full max-h-[90vh] flex items-center justify-center"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button 
+                  onClick={() => setPreviewImageUrl(null)}
+                  className="absolute -top-12 right-0 p-2 text-white/70 hover:text-white transition-colors bg-white/10 hover:bg-white/20 rounded-full"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+                <img 
+                  src={previewImageUrl} 
+                  className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl border border-white/10" 
+                  alt="Preview Screenshot"
+                  referrerPolicy="no-referrer"
+                />
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Voucher Barcode & Print Modal */}
+        <AnimatePresence>
+          {selectedVoucherForPrint && (
+            <div 
+              className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md"
+              onClick={() => setSelectedVoucherForPrint(null)}
+            >
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 15 }}
+                className="relative bg-white max-w-md w-full rounded-2xl overflow-hidden shadow-2xl p-6 space-y-6"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+                  <h3 className="font-serif text-lg font-bold text-natural-text-dark flex items-center gap-2">
+                    <Ticket className="w-5 h-5 text-natural-primary" />
+                    Cetak / Tampilkan Barcode
+                  </h3>
+                  <button 
+                    onClick={() => setSelectedVoucherForPrint(null)}
+                    className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* THE PRINTABLE CARD CONTAINER */}
+                <div className="flex justify-center bg-gray-50 p-4 rounded-xl border border-dashed border-gray-200">
+                  <div id="printable-voucher-card" className="voucher-card">
+                    <div className="header">DINA LAUNDRY</div>
+                    <div className="subheader">Luxurious Laundry</div>
+                    
+                    <div className="benefit-badge">Voucher Promo</div>
+                    <div className="benefit-val">
+                      {getVoucherBenefitText(selectedVoucherForPrint)}
+                    </div>
+                    
+                    <div className="code-box">
+                      {selectedVoucherForPrint.code}
+                    </div>
+
+                    <div className="expiry">
+                      📅 Berlaku hingga: <span style={{ fontWeight: 600 }}>{selectedVoucherForPrint.expiryDate}</span>
+                    </div>
+
+                    {selectedVoucherForPrint.minTransaction > 0 && (
+                      <div className="expiry" style={{ fontSize: '10px', marginTop: '-6px' }}>
+                        🛒 Min. Transaksi: <span style={{ fontWeight: 600 }}>Rp {selectedVoucherForPrint.minTransaction.toLocaleString()}</span>
+                      </div>
+                    )}
+
+                    {selectedVoucherForPrint.customerName && (
+                      <div className="expiry" style={{ fontSize: '10px', marginTop: '-6px' }}>
+                        👤 Khusus: <span style={{ fontWeight: 600 }}>{selectedVoucherForPrint.customerName} ({selectedVoucherForPrint.customerPhone})</span>
+                      </div>
+                    )}
+
+                    <div className="barcode-container flex justify-center">
+                      <svg ref={barcodeRef} className="barcode"></svg>
+                    </div>
+
+                    <div className="terms">
+                      Harap tunjukkan barcode/kode voucher ini ke PIC Kasir Dina Laundry saat melakukan transaksi. Voucher hanya berlaku satu kali penggunaan sebelum batas waktu kedaluwarsa berakhir.
+                    </div>
+                  </div>
+                </div>
+
+                {/* ACTIONS */}
+                <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedVoucherForPrint(null)}
+                    className="py-3 px-4 bg-gray-100 hover:bg-gray-200 text-natural-text-dark font-bold rounded-xl text-sm transition-colors order-3 sm:order-1 sm:flex-1"
+                  >
+                    Tutup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleShareVoucher}
+                    className="py-3 px-4 bg-[#25D366] text-white font-bold rounded-xl text-sm hover:bg-[#20ba5a] shadow-md flex items-center justify-center gap-2 transition-all active:scale-[0.98] order-1 sm:order-2 sm:flex-1"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    Share WhatsApp
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePrintVoucher}
+                    className="py-3 px-4 bg-natural-primary text-white font-bold rounded-xl text-sm hover:bg-opacity-95 shadow-md flex items-center justify-center gap-2 transition-all active:scale-[0.98] order-2 sm:order-3 sm:flex-1"
+                  >
+                    <Printer className="w-4 h-4" />
+                    Cetak Voucher
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Delete Confirmation Modal */}
+        <AnimatePresence>
+          {confirmDeleteId && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.9, opacity: 0 }}
+                className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl shadow-red-200/50"
+              >
+                <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mb-4 mx-auto text-red-600">
+                  <AlertCircle className="w-6 h-6" />
+                </div>
+                <h3 className="text-lg font-bold text-natural-text-dark text-center mb-2">Konfirmasi Hapus</h3>
+                <p className="text-sm text-natural-text-muted text-center mb-6">
+                  Apakah Anda yakin ingin menghapus data ini? Data dan screenshotnya akan terhapus permanen dari sistem.
+                </p>
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => setConfirmDeleteId(null)}
+                    className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors"
+                  >
+                    Batal
+                  </button>
+                  <button 
+                    onClick={() => {
+                      const f = followups.find(x => x.id === confirmDeleteId);
+                      if (f) executeDelete(f);
+                    }}
+                    className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg shadow-red-200 transition-all"
+                  >
+                    Hapus
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence mode="wait">
+          {activeTab === CATEGORIES[0] ? (
+            <motion.div
+              key="cs-form"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="grid grid-cols-1 xl:grid-cols-12 gap-8 content-start"
+            >
+              <header className="xl:col-span-12 mb-2">
+                <div className="space-y-1">
+                  <h2 className="font-serif text-3xl text-natural-text-dark">Input Follow-up</h2>
+                  <p className="text-natural-text-muted">Masukan detail follow-up konsumen untuk hari ini.</p>
+                </div>
+              </header>
+
+              <section className="xl:col-span-12">
+                <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+                  <div className="flex-shrink-0 card-natural p-4 min-w-[200px] border-l-4 border-l-natural-primary bg-natural-primary/5">
+                    <p className="text-[10px] uppercase font-bold text-natural-text-muted mb-1">Total Follow-up</p>
+                    <p className="text-2xl font-bold text-natural-text-dark">{followups.length}</p>
+                    <p className="text-[10px] text-natural-primary/70 font-medium whitespace-nowrap">Seluruh Data Aktif</p>
+                  </div>
+                  <div className="flex-shrink-0 card-natural p-4 min-w-[200px] border-l-4 border-l-amber-400">
+                    <p className="text-[10px] uppercase font-bold text-natural-text-muted mb-1">Hari Ini</p>
+                    <p className="text-2xl font-bold text-natural-text-dark">
+                      {followups.filter(f => f.date === new Date().toISOString().split('T')[0]).length}
+                    </p>
+                    <p className="text-[10px] text-amber-600 font-medium whitespace-nowrap">Input Konsumen Baru</p>
+                  </div>
+                  <div className="flex-shrink-0 card-natural p-4 min-w-[200px] border-l-4 border-l-red-400">
+                    <p className="text-[10px] uppercase font-bold text-natural-text-muted mb-1">Pending Progress</p>
+                    <p className="text-2xl font-bold text-natural-text-dark">{pendingProgressFollowups.length}</p>
+                    <p className="text-[10px] text-red-600 font-medium whitespace-nowrap">Belum di-Follow Lanjut</p>
+                  </div>
+                  <div className="flex-shrink-0 card-natural p-4 min-w-[200px] border-l-4 border-l-green-400">
+                    <p className="text-[10px] uppercase font-bold text-natural-text-muted mb-1">Done Progress</p>
+                    <p className="text-2xl font-bold text-natural-text-dark">{doneProgressItems.length}</p>
+                    <p className="text-[10px] text-green-600 font-medium whitespace-nowrap">Sudah Terupdate</p>
+                  </div>
+                </div>
+              </section>
+
+              <section className="xl:col-span-5 self-start">
+                <div className="card-natural p-6">
+                  <div className="flex items-center justify-between border-b border-gray-50 pb-3 mb-6">
+                    <h3 className="text-sm font-bold text-natural-text-dark uppercase tracking-wider">
+                      {editingId ? 'Edit Data Follow-up' : 'Data Input Follow-up'}
+                    </h3>
+                    {editingId && (
+                      <button 
+                        onClick={handleCancelEdit}
+                        className="flex items-center gap-1 text-[10px] font-bold text-red-500 hover:underline"
+                      >
+                        <X className="w-3 h-3" /> BATAL EDIT
+                      </button>
+                    )}
+                  </div>
+                  <form onSubmit={handleSubmit} className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="block text-xs font-semibold text-natural-text-muted">Tanggal</label>
+                        <input 
+                          type="date" 
+                          value={formDate || ''}
+                          onChange={(e) => setFormDate(e.target.value)}
+                          className="w-full px-3 py-2 border border-natural-border rounded-lg text-sm focus:ring-1 focus:ring-natural-primary outline-none"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-xs font-semibold text-natural-text-muted">PIC Follow-up</label>
+                        <input 
+                          type="text" 
+                          placeholder="Nama PIC..."
+                          value={formPic || ''}
+                          onChange={(e) => setFormPic(e.target.value)}
+                          className="w-full px-3 py-2 border border-natural-border rounded-lg text-sm focus:ring-1 focus:ring-natural-primary outline-none"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="block text-xs font-semibold text-natural-text-muted">Nama Konsumen</label>
+                        <input 
+                          type="text" 
+                          placeholder="Nama Konsumen..."
+                          value={customerName || ''}
+                          onChange={(e) => setCustomerName(e.target.value)}
+                          className="w-full px-3 py-2 border border-natural-border rounded-lg text-sm focus:ring-1 focus:ring-natural-primary outline-none"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-xs font-semibold text-natural-text-muted">No. HP Konsumen</label>
+                        <input 
+                          type="text" 
+                          placeholder="08123..."
+                          value={customerPhone || ''}
+                          onChange={(e) => setCustomerPhone(e.target.value)}
+                          className="w-full px-3 py-2 border border-natural-border rounded-lg text-sm focus:ring-1 focus:ring-natural-primary outline-none"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-semibold text-natural-text-muted">Caption / Hasil Follow-up</label>
+                      <textarea 
+                        rows={4}
+                        placeholder="Tuliskan detail percakapan..."
+                        value={formCaption || ''}
+                        onChange={(e) => setFormCaption(e.target.value)}
+                        className="w-full px-3 py-2 border border-natural-border rounded-lg text-sm focus:ring-1 focus:ring-natural-primary outline-none placeholder:text-gray-300"
+                        required
+                      ></textarea>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-semibold text-natural-text-muted">Screenshoot Bukti</label>
+                      <input 
+                        type="file" 
+                        id="screenshot-upload"
+                        accept="image/*"
+                        onChange={handleFileUpload}
+                        className="hidden"
+                      />
+                      <label 
+                        htmlFor="screenshot-upload"
+                        className={`block border-2 border-dashed rounded-lg p-6 text-center transition-all cursor-pointer ${
+                          formFile 
+                          ? 'border-natural-primary bg-natural-bg/50' 
+                          : 'border-natural-border bg-gray-50 hover:border-natural-primary'
+                        }`}
+                      >
+                        {formFile ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <CheckCircle2 className="w-8 h-8 text-natural-primary" />
+                            <p className="text-[11px] font-bold text-natural-text-dark">{formFile.name}</p>
+                            <p className="text-[9px] text-natural-text-muted italic">Sudah dikompres otomatis</p>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center gap-1 text-natural-text-muted">
+                            <ImageIcon className="w-8 h-8 opacity-50" />
+                            <p className="text-[11px] font-bold">Upload Bukti (Max 5MB)</p>
+                            <p className="text-[9px] italic">Simpan ke Cloudinary</p>
+                          </div>
+                        )}
+                      </label>
+                    </div>
+
+                    <button 
+                      type="submit"
+                      disabled={uploading}
+                      className={`w-full py-3 rounded-xl font-semibold text-sm shadow-md mt-2 flex items-center justify-center gap-2 transition-all ${
+                        editingId ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'btn-natural-primary'
+                      }`}
+                    >
+                      {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : (editingId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />)}
+                      {uploading ? 'Menyimpan...' : (editingId ? 'Perbarui Data Follow-up' : 'Submit & Simpan Cloudinary')}
+                    </button>
+                  </form>
+                </div>
+              </section>
+
+              <section className="xl:col-span-7 space-y-6">
+                <div className="card-natural flex flex-col h-full min-h-[400px]">
+                  <div className="p-4 border-b border-gray-50 flex justify-between items-center">
+                    <h3 className="text-sm font-bold text-natural-text-dark uppercase tracking-wider">Aktivitas Terakhir</h3>
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.5)]"></div>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <div className="grid divide-y divide-gray-50">
+                      {loading ? (
+                        <div className="py-20 text-center"><LoadingSpinner /></div>
+                      ) : followups.length === 0 ? (
+                        <div className="py-20 text-center text-natural-text-muted text-xs">Belum ada aktivitas.</div>
+                      ) : (
+                        followups.slice(0, 8).map((f, idx) => (
+                          <div key={`aktivitas-${f.id || idx}`} className="group p-4 flex gap-4 hover:bg-gray-50/50 transition-colors relative">
+                            <div className="relative group/img cursor-zoom-in" onClick={() => setPreviewImageUrl(f.screenshotUrl)}>
+                              <img src={f.screenshotUrl} className="w-16 h-16 rounded-lg object-cover bg-gray-100 flex-shrink-0 border border-gray-100" referrerPolicy="no-referrer" />
+                              <div className="absolute inset-0 bg-black/20 opacity-0 group-hover/img:opacity-100 transition-opacity rounded-lg flex items-center justify-center">
+                                <Search className="w-4 h-4 text-white" />
+                              </div>
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-[10px] font-bold text-natural-text-dark">{f.date}</span>
+                                <span className="text-[10px] text-natural-text-muted whitespace-nowrap italic">— {f.pic}</span>
+                              </div>
+                              <p className="text-[10px] font-bold text-natural-text-dark mb-0.5">{f.customerName}</p>
+                              <p className="text-[10px] text-natural-text-dark line-clamp-1 leading-relaxed opacity-70">{f.caption}</p>
+                            </div>
+                            
+                            <div className="flex flex-col gap-2">
+                              <button 
+                                onClick={() => handleEdit(f)}
+                                className="p-1.5 rounded-lg bg-amber-50 text-amber-600 hover:bg-amber-100 transition-colors"
+                                title="Edit"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button 
+                                onClick={() => handleDelete(f)}
+                                disabled={f.id ? deletingIds.has(f.id) : false}
+                                className={`p-1.5 rounded-lg transition-colors ${
+                                  f.id && deletingIds.has(f.id) 
+                                  ? 'bg-gray-100 text-gray-400' 
+                                  : 'bg-red-50 text-red-600 hover:bg-red-100'
+                                }`}
+                                title="Hapus"
+                              >
+                                {f.id && deletingIds.has(f.id) ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </motion.div>
+          ) : activeTab === CATEGORIES[1] ? (
+            <motion.div
+              key="progress-tab"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="grid grid-cols-1 xl:grid-cols-12 gap-8 content-start"
+            >
+              <header className="xl:col-span-12 mb-2">
+                <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+                  <div className="space-y-1">
+                    <h2 className="font-serif text-3xl text-natural-text-dark font-bold">Progress Follow-up</h2>
+                    <p className="text-natural-text-muted">Pengecekan hasil follow-up setelah 4 hari.</p>
+                  </div>
+                  <div className="flex items-center gap-3 bg-white p-1 rounded-2xl shadow-sm border border-natural-border">
+                    <button 
+                      onClick={() => {
+                        setActiveProgressSubTab('pending');
+                        setSelectedFollowupForProgress(null);
+                        setSelectedDoneProgress(null);
+                      }}
+                      className={`px-6 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${
+                        activeProgressSubTab === 'pending' 
+                        ? 'bg-red-500 text-white shadow-lg shadow-red-200' 
+                        : 'text-natural-text-muted hover:text-natural-text-dark'
+                      }`}
+                    >
+                      Pending ({pendingProgressFollowups.length})
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setActiveProgressSubTab('done');
+                        setSelectedFollowupForProgress(null);
+                        setSelectedDoneProgress(null);
+                      }}
+                      className={`px-6 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${
+                        activeProgressSubTab === 'done' 
+                        ? 'bg-green-500 text-white shadow-lg shadow-green-200' 
+                        : 'text-natural-text-muted hover:text-natural-text-dark'
+                      }`}
+                    >
+                      Done ({doneProgressItems.length})
+                    </button>
+                    <div className="h-6 w-[1px] bg-gray-200 mx-2" />
+                    <div className="relative group">
+                      <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-natural-text-muted group-focus-within:text-natural-primary transition-colors" />
+                      <input 
+                        type="text" 
+                        placeholder="MM-YYYY"
+                        value={progressFilterMonth}
+                        onChange={(e) => setProgressFilterMonth(e.target.value)}
+                        className="pl-9 pr-4 py-2 bg-gray-50 border border-transparent rounded-xl text-xs font-bold focus:bg-white focus:border-natural-primary outline-none transition-all w-32"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </header>
+
+              {/* DASHBOARD HASIL FOLLOW-UP LANJUTAN */}
+              <section id="progress-dashboard-panel" className="xl:col-span-12 card-natural p-6 bg-white border border-natural-border shadow-sm rounded-2xl mb-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 pb-4 mb-6">
+                  <div>
+                    <h3 className="text-sm font-bold text-natural-text-dark uppercase tracking-wider flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-natural-primary" />
+                      Dashboard Hasil Follow-up Lanjutan
+                    </h3>
+                    <p className="text-[11px] text-natural-text-muted mt-1">Metrik performa dan respon dari customer hasil follow-up lanjutan.</p>
+                  </div>
+                  
+                  {/* Period Selector */}
+                  <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-xl border border-gray-100 shrink-0">
+                    {(['7', '14', '30', 'all'] as const).map((period) => {
+                      const label = period === '7' ? '7 Hari' : period === '14' ? '14 Hari' : period === '30' ? '30 Hari' : 'Semua';
+                      const isActive = dashboardPeriod === period;
+                      return (
+                        <button
+                          key={`db-period-${period}`}
+                          type="button"
+                          onClick={() => setDashboardPeriod(period)}
+                          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                            isActive
+                            ? 'bg-natural-primary text-white shadow-sm'
+                            : 'text-natural-text-muted hover:text-natural-text-dark hover:bg-gray-150'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Dashboard Stats Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* Card 1: Total Customer */}
+                  <div className="p-4 rounded-xl border border-blue-100 bg-blue-50/30 flex flex-col justify-between min-h-[100px]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[9px] font-bold text-blue-700 uppercase tracking-wider">Total Follow-up Lanjutan</span>
+                      <div className="p-1.5 bg-blue-100 text-blue-700 rounded-lg">
+                        <User className="w-3.5 h-3.5" />
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-2xl font-bold text-natural-text-dark">{dashboardStats.total}</h4>
+                      <p className="text-[9px] text-blue-600 font-medium mt-1">Konsumen di-follow up lanjutan</p>
+                    </div>
+                  </div>
+
+                  {/* Card 2: Respon */}
+                  <div className="p-4 rounded-xl border border-emerald-100 bg-emerald-50/30 flex flex-col justify-between min-h-[100px]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[9px] font-bold text-emerald-700 uppercase tracking-wider">Merespon</span>
+                      <div className="p-1.5 bg-emerald-100 text-emerald-700 rounded-lg">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-baseline gap-2">
+                        <h4 className="text-2xl font-bold text-natural-text-dark">{dashboardStats.respon}</h4>
+                        {dashboardStats.total > 0 && (
+                          <span className="text-[10px] font-bold text-emerald-600">
+                            ({Math.round((dashboardStats.respon / dashboardStats.total) * 100)}%)
+                          </span>
+                        )}
+                      </div>
+                      
+                      {/* Mini progress bar */}
+                      <div className="w-full bg-emerald-100 h-1 rounded-full mt-2 overflow-hidden">
+                        <div 
+                          className="bg-emerald-500 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${dashboardStats.total > 0 ? (dashboardStats.respon / dashboardStats.total) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <p className="text-[9px] text-emerald-600 font-medium mt-1">Ada feedback / balasan konsumen</p>
+                    </div>
+                  </div>
+
+                  {/* Card 3: Tidak Respon */}
+                  <div className="p-4 rounded-xl border border-rose-100 bg-rose-50/30 flex flex-col justify-between min-h-[100px]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[9px] font-bold text-rose-700 uppercase tracking-wider">Tidak Respon</span>
+                      <div className="p-1.5 bg-rose-100 text-rose-700 rounded-lg">
+                        <X className="w-3.5 h-3.5" />
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-baseline gap-2">
+                        <h4 className="text-2xl font-bold text-natural-text-dark">{dashboardStats.tidakRespon}</h4>
+                        {dashboardStats.total > 0 && (
+                          <span className="text-[10px] font-bold text-rose-600">
+                            ({Math.round((dashboardStats.tidakRespon / dashboardStats.total) * 100)}%)
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Mini progress bar */}
+                      <div className="w-full bg-rose-100 h-1 rounded-full mt-2 overflow-hidden">
+                        <div 
+                          className="bg-rose-500 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${dashboardStats.total > 0 ? (dashboardStats.tidakRespon / dashboardStats.total) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <p className="text-[9px] text-rose-600 font-medium mt-1">Tidak membalas chat</p>
+                    </div>
+                  </div>
+
+                  {/* Card 4: Respon Tanpa Feedback */}
+                  <div className="p-4 rounded-xl border border-amber-100 bg-amber-50/30 flex flex-col justify-between min-h-[100px]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[9px] font-bold text-amber-700 uppercase tracking-wider">Respon Tanpa Feedback</span>
+                      <div className="p-1.5 bg-amber-100 text-amber-700 rounded-lg">
+                        <AlertCircle className="w-3.5 h-3.5" />
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-baseline gap-2">
+                        <h4 className="text-2xl font-bold text-natural-text-dark">{dashboardStats.responTanpaFeedback}</h4>
+                        {dashboardStats.total > 0 && (
+                          <span className="text-[10px] font-bold text-amber-600">
+                            ({Math.round((dashboardStats.responTanpaFeedback / dashboardStats.total) * 100)}%)
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Mini progress bar */}
+                      <div className="w-full bg-amber-100 h-1 rounded-full mt-2 overflow-hidden">
+                        <div 
+                          className="bg-amber-500 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${dashboardStats.total > 0 ? (dashboardStats.responTanpaFeedback / dashboardStats.total) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <p className="text-[9px] text-amber-600 font-medium mt-1">Merespon tapi no feedback</p>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Progress Selection */}
+              <section className="xl:col-span-4 space-y-4">
+                <div className="card-natural p-6 flex flex-col h-[600px]">
+                  <div className="flex items-center gap-2 border-b border-gray-50 pb-4 mb-4">
+                    {activeProgressSubTab === 'pending' ? <ListFilter className="w-5 h-5 text-red-500" /> : <CheckCircle2 className="w-5 h-5 text-green-500" />}
+                    <div>
+                      <h3 className="text-sm font-bold text-natural-text-dark uppercase tracking-wider">
+                        {activeProgressSubTab === 'pending' ? 'Belum Di-follow Lanjut' : 'Sudah Terupdate'}
+                      </h3>
+                      <p className="text-[10px] text-natural-text-muted">Periode: {progressFilterMonth || 'Semua'}</p>
+                    </div>
+                  </div>
+
+                  {/* Sticky Search Bar (Only for Done Tab) */}
+                  {activeProgressSubTab === 'done' && (
+                    <div className="relative mb-4">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-natural-text-muted" />
+                      <input 
+                        type="text" 
+                        placeholder="Cari nama atau nomor HP..."
+                        value={progressSearchQuery}
+                        onChange={(e) => setProgressSearchQuery(e.target.value)}
+                        className="w-full pl-9 pr-8 py-2.5 bg-gray-50 border border-natural-border hover:border-gray-300 rounded-xl text-xs font-semibold focus:bg-white focus:border-natural-primary outline-none transition-all shadow-sm"
+                      />
+                      {progressSearchQuery && (
+                        <button 
+                          type="button"
+                          onClick={() => setProgressSearchQuery('')}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 bg-gray-200/50 text-gray-500 hover:text-gray-800 rounded-full flex items-center justify-center text-[10px] font-bold"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+                    {activeProgressSubTab === 'pending' ? (
+                      pendingProgressFollowups.length === 0 ? (
+                        <div className="py-20 text-center text-natural-text-muted text-xs">
+                          Tidak ada data pending di periode ini.
+                        </div>
+                      ) : (
+                        pendingProgressFollowups.map((f, idx) => (
+                          <button
+                            key={`pending-${f.id || idx}`}
+                            onClick={() => setSelectedFollowupForProgress(f)}
+                            className={`w-full text-left p-4 rounded-xl border transition-all ${
+                              selectedFollowupForProgress?.id === f.id
+                              ? 'bg-natural-primary/10 border-natural-primary shadow-sm'
+                              : 'bg-gray-50/50 border-transparent hover:border-gray-200 shadow-sm'
+                            }`}
+                          >
+                            <div className="flex justify-between items-start mb-2">
+                              <span className="text-[9px] font-bold text-natural-text-muted uppercase tracking-tighter">{f.date}</span>
+                              <span className="text-[9px] bg-white px-2 py-0.5 rounded border border-natural-border font-bold">{f.pic}</span>
+                            </div>
+                            <p className="font-bold text-natural-text-dark text-sm truncate">{f.customerName}</p>
+                            <p className="text-[10px] text-natural-text-muted truncate mb-2">{f.customerPhone}</p>
+                            <div className="flex items-center gap-1 text-natural-primary">
+                              <span className="text-[8px] font-black uppercase tracking-widest">Update Sekarang</span>
+                              <Plus className="w-3 h-3" />
+                            </div>
+                          </button>
+                        ))
+                      )
+                    ) : (
+                      doneProgressItemsFiltered.length === 0 ? (
+                        <div className="py-20 text-center text-natural-text-muted text-xs font-medium">
+                          {progressSearchQuery ? 'Tidak ada hasil pencarian.' : 'Belum ada progress di periode ini.'}
+                        </div>
+                      ) : (
+                        doneProgressItemsFiltered.map((p, idx) => {
+                          const isSelected = selectedDoneProgress?.id === p.id;
+                          return (
+                            <button
+                              key={`done-${p.id || idx}`}
+                              onClick={() => setSelectedDoneProgress(p)}
+                              className={`w-full text-left p-4 rounded-xl border transition-all ${
+                                isSelected
+                                ? 'bg-green-500/10 border-green-500 shadow-sm'
+                                : 'bg-gray-50/50 border-transparent hover:border-gray-200 shadow-sm'
+                              }`}
+                            >
+                              <div className="flex justify-between items-start mb-2">
+                                <span className="text-[9px] font-bold text-natural-text-muted uppercase tracking-tighter">{p.date}</span>
+                                <span className={`text-[9px] px-2 py-0.5 rounded font-black uppercase ${
+                                  p.outcome === 'Ada feedback' ? 'bg-green-100 text-green-700' :
+                                  p.outcome === 'Tidak ada respon' ? 'bg-red-100 text-red-700' :
+                                  'bg-amber-100 text-amber-700'
+                                }`}>{p.outcome}</span>
+                              </div>
+                              <p className="font-bold text-natural-text-dark text-sm truncate">{p.customerName}</p>
+                              <p className="text-[10px] text-natural-text-muted truncate mb-2">{p.customerPhone}</p>
+                              <div className="flex flex-wrap gap-1 mt-2">
+                                {p.channels.map((c) => (
+                                  <span key={`done-ch-${p.id}-${c}`} className="text-[8px] bg-gray-100 px-1.5 py-0.5 rounded font-bold uppercase text-gray-600">{c}</span>
+                                ))}
+                              </div>
+                              <div className="flex items-center gap-1 text-natural-primary mt-3 text-[9px] font-black uppercase tracking-widest hover:underline">
+                                <span>Lihat Detail</span>
+                                <Search className="w-3 h-3" />
+                              </div>
+                            </button>
+                          );
+                        })
+                      )
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              {/* Progress Update Form */}
+              <section className="xl:col-span-8 self-start">
+                {activeProgressSubTab === 'pending' ? (
+                  selectedFollowupForProgress ? (
+                    <form onSubmit={handleProgressSubmit} className="card-natural p-8 space-y-8">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="space-y-6">
+                          <div className="p-4 bg-natural-primary/5 rounded-2xl border border-natural-primary/10">
+                            <h4 className="text-[10px] font-black text-natural-primary uppercase tracking-[0.2em] mb-4">Target Update</h4>
+                            <div className="flex items-center gap-4">
+                              <div className="w-12 h-12 rounded-xl bg-white shadow-sm flex items-center justify-center text-natural-primary font-bold text-lg border border-natural-primary/10">
+                                {selectedFollowupForProgress.customerName.charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <p className="text-lg font-serif font-bold text-natural-text-dark leading-tight">{selectedFollowupForProgress.customerName}</p>
+                                <p className="text-xs text-natural-text-muted">{selectedFollowupForProgress.customerPhone}</p>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-4">
+                            <label className="block text-xs font-black text-natural-text-muted uppercase tracking-wider">Hasil Pengecekan</label>
+                            <div className="grid gap-2">
+                              {Object.values(ProgressOutcome).map((outcome) => (
+                                <button
+                                  key={`outcome-opt-${outcome}`}
+                                  type="button"
+                                  onClick={() => setProgressOutcome(outcome)}
+                                  className={`w-full px-4 py-3 text-left rounded-xl text-xs font-semibold border transition-all flex items-center justify-between ${
+                                    progressOutcome === outcome
+                                    ? 'bg-natural-primary text-white border-natural-primary shadow-lg shadow-natural-primary/20'
+                                    : 'bg-white text-natural-text-dark border-natural-border hover:bg-gray-50'
+                                  }`}
+                                >
+                                  {outcome}
+                                  {progressOutcome === outcome && <CheckCircle2 className="w-4 h-4" />}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            <label className="block text-xs font-black text-natural-text-muted uppercase tracking-wider">Media Feedback (Multiple)</label>
+                            <div className="flex flex-wrap gap-2">
+                              {Object.values(ProgressChannel).map((channel) => {
+                                const isSelected = progressChannels.includes(channel);
+                                return (
+                                  <button
+                                    key={`channel-opt-${channel}`}
+                                    type="button"
+                                    onClick={() => {
+                                      if (isSelected) setProgressChannels(prev => prev.filter(c => c !== channel));
+                                      else setProgressChannels(prev => [...prev, channel]);
+                                    }}
+                                    className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all ${
+                                      isSelected
+                                      ? 'bg-natural-text-dark text-white border-natural-text-dark'
+                                      : 'bg-white text-natural-text-muted border-natural-border hover:border-natural-primary'
+                                    }`}
+                                  >
+                                    {channel}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-6">
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1.5">
+                              <label className="block text-xs font-black text-natural-text-muted uppercase tracking-wider">PIC Progress</label>
+                              <input 
+                                type="text" 
+                                placeholder="Nama Anda..."
+                                value={progressPic}
+                                onChange={(e) => setProgressPic(e.target.value)}
+                                className="w-full px-4 py-3 bg-gray-50 border border-natural-border rounded-xl text-sm focus:ring-1 focus:ring-natural-primary outline-none"
+                                required
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <label className="block text-xs font-black text-natural-text-muted uppercase tracking-wider">Tanggal</label>
+                              <input 
+                                type="date" 
+                                value={progressDate}
+                                onChange={(e) => setProgressDate(e.target.value)}
+                                className="w-full px-4 py-3 bg-gray-50 border border-natural-border rounded-xl text-sm focus:ring-1 focus:ring-natural-primary outline-none"
+                                required
+                              />
+                            </div>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="block text-xs font-black text-natural-text-muted uppercase tracking-wider">Keterangan Tambahan</label>
+                            <textarea 
+                              rows={3}
+                              placeholder="Detail progress..."
+                              value={progressCaption}
+                              onChange={(e) => setProgressCaption(e.target.value)}
+                              className="w-full px-4 py-3 bg-gray-50 border border-natural-border rounded-xl text-sm focus:ring-1 focus:ring-natural-primary outline-none"
+                            ></textarea>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="block text-xs font-black text-natural-text-muted uppercase tracking-wider">Upload Bukti Progress</label>
+                            <input 
+                              type="file" 
+                              id="progress-upload"
+                              accept="image/*"
+                              onChange={handleProgressFileUpload}
+                              className="hidden"
+                            />
+                            <label 
+                              htmlFor="progress-upload"
+                              className={`block border-2 border-dashed rounded-2xl p-8 text-center transition-all cursor-pointer ${
+                                progressFile 
+                                ? 'border-natural-primary bg-natural-primary/5' 
+                                : 'border-natural-border bg-gray-50 hover:border-natural-primary hover:bg-white animate-soft-pulse'
+                              }`}
+                            >
+                              {progressUploading ? (
+                                <div className="flex flex-col items-center gap-2">
+                                  <Loader2 className="w-8 h-8 animate-spin text-natural-primary" />
+                                  <p className="text-[10px] font-bold text-natural-text-dark">Sedang Mengunggah...</p>
+                                </div>
+                              ) : progressFile ? (
+                                <div className="flex flex-col items-center gap-1">
+                                  <CheckCircle2 className="w-8 h-8 text-natural-primary" />
+                                  <p className="text-[11px] font-bold text-natural-text-dark">{progressFile.name}</p>
+                                  <p className="text-[9px] text-natural-text-muted italic">Format progress otomatis diaktifkan</p>
+                                </div>
+                              ) : (
+                                <div className="flex flex-col items-center gap-2 text-natural-text-muted">
+                                  <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-sm mb-1">
+                                    <Upload className="w-5 h-5 opacity-50" />
+                                  </div>
+                                  <p className="text-[11px] font-black uppercase tracking-[0.1em]">Klik untuk Unggah</p>
+                                  <p className="text-[9px] italic opacity-70">Folder: Cloudinary/Progress</p>
+                                </div>
+                              )}
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="pt-6 border-t border-gray-50 flex gap-4">
+                        <button 
+                          type="button" 
+                          onClick={() => setSelectedFollowupForProgress(null)}
+                          className="px-8 py-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all"
+                        >
+                          Batal
+                        </button>
+                        <button 
+                          type="submit"
+                          disabled={progressUploading}
+                          className="flex-1 py-4 bg-natural-text-dark hover:bg-black text-white font-black uppercase tracking-[0.2em] text-sm rounded-xl shadow-xl shadow-gray-200 transition-all active:scale-[0.98] flex items-center justify-center gap-3"
+                        >
+                          {progressUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Plus className="w-5 h-5" />}
+                          {progressUploading ? 'Memproses...' : 'Simpan Progress Follow-up'}
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className="card-natural p-20 flex flex-col items-center justify-center text-center space-y-4 bg-natural-primary/5 border-dashed border-2 border-natural-primary/20">
+                      <div className="w-20 h-20 bg-white rounded-[2rem] shadow-xl flex items-center justify-center text-natural-primary">
+                        <MessageSquare className="w-10 h-10 opacity-30" />
+                      </div>
+                      <div className="max-w-md">
+                        <h3 className="font-serif text-2xl text-natural-text-dark">Pilih Data Untuk Update</h3>
+                        <p className="text-sm text-natural-text-muted mt-2">
+                          Silakan pilih salah satu data dari menu antrian 4 hari di sebelah kiri untuk melakukan update progress follow-up.
+                        </p>
+                      </div>
+                    </div>
+                  )
+                ) : (
+                  selectedDoneProgress ? (
+                    <div className="card-natural p-8 space-y-8">
+                      <div className="flex items-center justify-between border-b border-gray-100 pb-4">
+                        <div>
+                          <span className="text-[10px] font-black uppercase text-green-600 tracking-[0.2em] bg-green-50 px-3 py-1 rounded-full border border-green-100">
+                            Hasil Progress Follow-up (Selesai)
+                          </span>
+                        </div>
+                        <button 
+                          onClick={() => setSelectedDoneProgress(null)}
+                          className="text-xs font-bold text-natural-text-muted hover:text-natural-text-dark bg-gray-50 hover:bg-gray-100 px-3 py-1.5 rounded-lg transition-colors border border-gray-100 shadow-sm animate-fade-in"
+                        >
+                          Tutup Detail
+                        </button>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="space-y-6">
+                          <div className="p-5 bg-green-50/20 rounded-2xl border border-green-100/30">
+                            <h4 className="text-[10px] font-black text-green-700 uppercase tracking-[0.2em] mb-4">Profil Konsumen</h4>
+                            <div className="flex items-center gap-4">
+                              <div className="w-12 h-12 rounded-xl bg-white shadow-sm flex items-center justify-center text-green-600 font-bold text-lg border border-green-100">
+                                {selectedDoneProgress.customerName.charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <p className="text-lg font-serif font-bold text-natural-text-dark leading-tight">{selectedDoneProgress.customerName}</p>
+                                <p className="text-xs text-natural-text-muted mt-1">{selectedDoneProgress.customerPhone}</p>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <h4 className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Hasil Pengecekan</h4>
+                            <div className="p-4 bg-gray-50 border border-natural-border rounded-xl">
+                              <div className="flex items-center gap-2">
+                                <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+                                <span className="text-sm font-bold text-natural-text-dark">{selectedDoneProgress.outcome}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <h4 className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Media Feedback yang Digunakan</h4>
+                            <div className="flex flex-wrap gap-2">
+                              {selectedDoneProgress.channels.length === 0 ? (
+                                <span className="text-xs text-natural-text-muted italic">Tidak ada media feedback yang dicatat.</span>
+                              ) : (
+                                selectedDoneProgress.channels.map(channel => (
+                                  <span 
+                                    key={channel} 
+                                    className="px-3.5 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest bg-natural-text-dark text-white shadow-sm"
+                                  >
+                                    {channel}
+                                  </span>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-6">
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1">
+                              <h4 className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Nama PIC Progress</h4>
+                              <div className="p-3 bg-gray-50 border border-natural-border rounded-xl text-sm font-semibold text-natural-text-dark shadow-sm">
+                                {selectedDoneProgress.pic || '-'}
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <h4 className="text-xs font-black text-natural-text-muted uppercase tracking-wider font-semibold">Tanggal Progress</h4>
+                              <div className="p-3 bg-gray-50 border border-natural-border rounded-xl text-sm font-semibold text-natural-text-dark shadow-sm">
+                                {selectedDoneProgress.date || '-'}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <h4 className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Keterangan Tambahan</h4>
+                            <div className="p-4 bg-gray-50 border border-natural-border rounded-xl text-sm text-natural-text-dark min-h-[100px] leading-relaxed whitespace-pre-wrap shadow-sm">
+                              {selectedDoneProgress.caption || <span className="text-natural-text-muted italic">Tidak ada keterangan tambahan.</span>}
+                            </div>
+                          </div>
+
+                          {selectedDoneProgress.screenshotUrl && (
+                            <div className="space-y-2">
+                              <h4 className="text-xs font-black text-natural-text-muted uppercase tracking-wider font-semibold">Bukti Progress</h4>
+                              <div className="relative group overflow-hidden rounded-xl border border-natural-border bg-gray-50 cursor-zoom-in max-h-[160px] flex items-center justify-center shadow-sm" onClick={() => setPreviewImageUrl(selectedDoneProgress.screenshotUrl)}>
+                                <img 
+                                  src={selectedDoneProgress.screenshotUrl} 
+                                  alt="Bukti Progress" 
+                                  className="object-cover w-full h-36 transition-transform duration-300 group-hover:scale-105" 
+                                  referrerPolicy="no-referrer"
+                                />
+                                <div className="absolute inset-x-0 bottom-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center py-2">
+                                  <span className="text-white text-[9px] font-black uppercase tracking-widest bg-black/40 px-3 py-1 rounded-md">Klik Untuk Memperbesar</span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="card-natural p-20 flex flex-col items-center justify-center text-center space-y-4 bg-natural-primary/5 border-dashed border-2 border-natural-primary/20">
+                      <div className="w-20 h-20 bg-white rounded-[2rem] shadow-xl flex items-center justify-center text-green-500">
+                        <CheckCircle2 className="w-10 h-10 opacity-30" />
+                      </div>
+                      <div className="max-w-md">
+                        <h3 className="font-serif text-2xl text-natural-text-dark">Pilih Data Progress</h3>
+                        <p className="text-sm text-natural-text-muted mt-2">
+                          Silakan pilih salah satu data dari sub menu Done di sebelah kiri untuk melihat detail progress follow-up yang telah disubmit.
+                        </p>
+                      </div>
+                    </div>
+                  )
+                )}
+              </section>
+            </motion.div>
+          ) : activeTab === CATEGORIES[2] ? (
+            <motion.div
+              key="voucher-tab"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="grid grid-cols-1 xl:grid-cols-12 gap-8 content-start"
+            >
+              <header className="xl:col-span-12 mb-2">
+                <div className="space-y-1">
+                  <h2 className="font-serif text-3xl text-natural-text-dark font-bold">Voucher & Promo</h2>
+                  <p className="text-natural-text-muted">Kelola pembuatan voucher diskon, cetak barcode, dan redeem voucher pelanggan.</p>
+                </div>
+              </header>
+
+              {/* LEFT SIDE: SCAN & REDEEM (5 COLS) */}
+              <section className="xl:col-span-5 space-y-6">
+                <div className="card-natural p-6 space-y-6 bg-white rounded-2xl border border-natural-border shadow-sm">
+                  <div className="border-b border-gray-100 pb-4">
+                    <h3 className="font-serif text-xl font-bold text-natural-text-dark flex items-center gap-2">
+                      <QrCode className="w-5 h-5 text-natural-primary" />
+                      Redeem Voucher
+                    </h3>
+                    <p className="text-xs text-natural-text-muted mt-1">Cari kode voucher atau scan menggunakan kamera.</p>
+                  </div>
+
+                   <form onSubmit={handleSearchVoucher} className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Kode Voucher</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Contoh: DINA-ABC123"
+                          value={voucherCodeInput}
+                          onChange={(e) => setVoucherCodeInput(e.target.value.toUpperCase())}
+                          className="flex-1 px-4 py-3 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary font-mono text-lg uppercase"
+                        />
+                        <button
+                          type="submit"
+                          className="px-5 bg-natural-text-dark text-white font-bold rounded-xl text-sm hover:bg-black transition-colors"
+                        >
+                          Cari
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 pt-2">
+                      <label className="text-[10px] font-black text-natural-text-muted uppercase tracking-widest block">Metode Scan & Input</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {/* Kamera Belakang */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isScanning && cameraFacingMode === 'environment') {
+                              setIsScanning(false);
+                            } else {
+                              setCameraFacingMode('environment');
+                              setIsScanning(true);
+                            }
+                          }}
+                          className={`flex flex-col items-center justify-center p-3 rounded-xl border text-center transition-all cursor-pointer ${
+                            isScanning && cameraFacingMode === 'environment'
+                            ? 'bg-natural-primary border-natural-primary text-white shadow-md shadow-natural-primary/10 scale-[0.98]'
+                            : 'bg-gray-50 hover:bg-gray-100 border-natural-border text-natural-text-dark'
+                          }`}
+                        >
+                          <Camera className="w-5 h-5 mb-1" />
+                          <span className="text-[10px] font-bold leading-tight">Cam Belakang</span>
+                        </button>
+
+                        {/* Kamera Depan */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isScanning && cameraFacingMode === 'user') {
+                              setIsScanning(false);
+                            } else {
+                              setCameraFacingMode('user');
+                              setIsScanning(true);
+                            }
+                          }}
+                          className={`flex flex-col items-center justify-center p-3 rounded-xl border text-center transition-all cursor-pointer ${
+                            isScanning && cameraFacingMode === 'user'
+                            ? 'bg-natural-primary border-natural-primary text-white shadow-md shadow-natural-primary/10 scale-[0.98]'
+                            : 'bg-gray-50 hover:bg-gray-100 border-natural-border text-natural-text-dark'
+                          }`}
+                        >
+                          <User className="w-5 h-5 mb-1" />
+                          <span className="text-[10px] font-bold leading-tight">Cam Depan</span>
+                        </button>
+
+                        {/* Ambil dari Galeri */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsScanning(false);
+                            document.getElementById('qr-gallery-input')?.click();
+                          }}
+                          className={`flex flex-col items-center justify-center p-3 rounded-xl border border-natural-border bg-gray-50 hover:bg-gray-100 text-natural-text-dark text-center transition-all cursor-pointer ${
+                            isScanningFile ? 'animate-pulse bg-natural-primary/10' : ''
+                          }`}
+                        >
+                          {isScanningFile ? (
+                            <Loader2 className="w-5 h-5 mb-1 text-natural-primary animate-spin" />
+                          ) : (
+                            <ImageIcon className="w-5 h-5 mb-1 text-natural-primary" />
+                          )}
+                          <span className="text-[10px] font-bold leading-tight">Buka Galeri</span>
+                        </button>
+                      </div>
+
+                      {/* Hidden input for gallery */}
+                      <input
+                        type="file"
+                        id="qr-gallery-input"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleScanFile}
+                      />
+                    </div>
+                  </form>
+
+                  {/* CAMERA STREAM BOX */}
+                  <div className={`space-y-2 animate-fade-in border-t border-gray-100 pt-4 ${isScanning ? 'block' : 'hidden'}`}>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-[10px] font-bold text-natural-text-muted uppercase tracking-wider">
+                        Live Scan: {cameraFacingMode === 'environment' ? 'Kamera Belakang' : 'Kamera Depan'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsScanning(false)}
+                        className="text-[10px] font-bold text-red-500 hover:underline"
+                      >
+                        Matikan Kamera
+                      </button>
+                    </div>
+                    <div id="reader" className="overflow-hidden rounded-2xl border-2 border-dashed border-natural-primary/30 bg-black min-h-[220px]"></div>
+                    {scanError ? (
+                      <p className="text-xs text-red-500 font-semibold text-center py-2">{scanError}</p>
+                    ) : (
+                      <p className="text-[10px] text-center text-natural-text-muted italic">Arahkan barcode / QR code voucher Anda ke kamera.</p>
+                    )}
+                  </div>
+
+                  {/* VOUCHER SEARCH RESULTS & REDEMPTION FORM */}
+                  {voucherSearchStatus !== 'idle' && (
+                    <div className="border-t border-gray-100 pt-6 space-y-4 animate-fade-in">
+                      {voucherSearchStatus === 'not_found' && (
+                        <div className="p-4 bg-red-50 border border-red-100 rounded-xl flex items-center gap-3">
+                          <AlertCircle className="w-5 h-5 text-red-500" />
+                          <p className="text-xs text-red-700 font-semibold">Kode voucher "{voucherCodeInput}" tidak terdaftar dalam sistem.</p>
+                        </div>
+                      )}
+
+                      {voucherSearchStatus === 'found' && scannedVoucher && (
+                        <div className="space-y-4">
+                          <div className={`p-5 rounded-2xl border ${
+                            scannedVoucher.isRedeemed 
+                            ? 'bg-gray-50 border-gray-200 text-gray-500' 
+                            : new Date().toISOString().split('T')[0] > scannedVoucher.expiryDate
+                            ? 'bg-red-50/50 border-red-100 text-red-700'
+                            : 'bg-green-50/50 border-green-100 text-green-700'
+                          }`}>
+                            <div className="flex justify-between items-start mb-2">
+                              <span className="text-[9px] font-black uppercase tracking-widest bg-white px-2 py-0.5 rounded-md shadow-sm border">
+                                {scannedVoucher.type}
+                              </span>
+                              <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full ${
+                                scannedVoucher.isRedeemed 
+                                ? 'bg-gray-200 text-gray-600'
+                                : new Date().toISOString().split('T')[0] > scannedVoucher.expiryDate
+                                ? 'bg-red-100 text-red-800'
+                                : 'bg-green-100 text-green-800'
+                              }`}>
+                                {scannedVoucher.isRedeemed 
+                                  ? 'TERPAKAI' 
+                                  : new Date().toISOString().split('T')[0] > scannedVoucher.expiryDate
+                                  ? 'EXPIRED'
+                                  : 'AKTIF (SIAP REDEEM)'}
+                              </span>
+                            </div>
+
+                            <p className="text-3xl font-serif font-black tracking-tight mb-2">
+                              {scannedVoucher.type === VoucherType.DISCOUNT_PERCENT ? `${scannedVoucher.value}%` : 
+                               scannedVoucher.type === VoucherType.NOMINAL ? `Rp ${Number(scannedVoucher.value).toLocaleString()}` : 
+                               scannedVoucher.value}
+                            </p>
+                            <p className="text-xs font-mono font-bold tracking-wider">{scannedVoucher.code}</p>
+
+                            <div className="mt-4 pt-3 border-t border-dashed border-gray-200/50 text-[11px] space-y-1">
+                              <p>📅 Kedaluwarsa: <span className="font-semibold">{scannedVoucher.expiryDate}</span></p>
+                              {scannedVoucher.minTransaction > 0 && (
+                                <p>🛒 Min. Transaksi: <span className="font-semibold">Rp {scannedVoucher.minTransaction.toLocaleString()}</span></p>
+                              )}
+                              {scannedVoucher.customerName && (
+                                <p>👤 Khusus Konsumen: <span className="font-semibold">{scannedVoucher.customerName} ({scannedVoucher.customerPhone})</span></p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* REDEEM ACTIONS FORM */}
+                          {!scannedVoucher.isRedeemed && new Date().toISOString().split('T')[0] <= scannedVoucher.expiryDate ? (
+                            <form onSubmit={handleRedeemVoucher} className="space-y-4 pt-2">
+                              <div className="space-y-3">
+                                <h4 className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Konfirmasi Penukaran</h4>
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-black text-natural-text-muted uppercase tracking-widest">Nama PIC Kasir *</label>
+                                  <input
+                                    type="text"
+                                    placeholder="Nama PIC..."
+                                    required
+                                    value={voucherRedeemPic}
+                                    onChange={(e) => setVoucherRedeemPic(e.target.value)}
+                                    className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                                  />
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-black text-natural-text-muted uppercase tracking-widest">Nama Konsumen (Opsional)</label>
+                                    <input
+                                      type="text"
+                                      placeholder="Nama konsumen..."
+                                      value={voucherRedeemCustomerName}
+                                      onChange={(e) => setVoucherRedeemCustomerName(e.target.value)}
+                                      className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-black text-natural-text-muted uppercase tracking-widest">HP Konsumen (Opsional)</label>
+                                    <input
+                                      type="text"
+                                      placeholder="No WhatsApp..."
+                                      value={voucherRedeemCustomerPhone}
+                                      onChange={(e) => setVoucherRedeemCustomerPhone(e.target.value)}
+                                      className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+
+                              <button
+                                type="submit"
+                                className="w-full py-3.5 bg-green-600 text-white font-bold rounded-xl text-sm shadow-lg shadow-green-100 hover:bg-green-700 transition-all flex items-center justify-center gap-2"
+                              >
+                                <CheckCircle2 className="w-4 h-4" />
+                                Redeem Voucher Sekarang
+                              </button>
+                            </form>
+                          ) : scannedVoucher.isRedeemed ? (
+                            <div className="p-4 bg-gray-100 rounded-xl text-xs space-y-2 text-gray-600 border border-gray-200">
+                              <p className="font-bold">Informasi Penukaran:</p>
+                              <p>👤 PIC Kasir: <span className="font-semibold">{scannedVoucher.redeemedBy}</span></p>
+                              <p>📅 Tanggal Tukar: <span className="font-semibold">{scannedVoucher.redeemedAt ? new Date(scannedVoucher.redeemedAt).toLocaleString('id-ID') : '-'}</span></p>
+                              {scannedVoucher.customerName && (
+                                <p>👥 Konsumen: <span className="font-semibold">{scannedVoucher.customerName} ({scannedVoucher.customerPhone})</span></p>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-xs text-red-800 font-semibold">
+                              Voucher ini sudah kedaluwarsa pada tanggal {scannedVoucher.expiryDate} dan tidak dapat digunakan lagi.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* RIGHT SIDE: GENERATOR & LIST (7 COLS) */}
+              <section className="xl:col-span-7 space-y-6">
+                {/* GENERATOR */}
+                <div className="card-natural p-6 bg-white rounded-2xl border border-natural-border shadow-sm">
+                  <div className="border-b border-gray-100 pb-4 mb-6">
+                    <h3 className="font-serif text-xl font-bold text-natural-text-dark flex items-center gap-2">
+                      <Ticket className="w-5 h-5 text-natural-primary" />
+                      Generate Voucher Baru
+                    </h3>
+                    <p className="text-xs text-natural-text-muted mt-1">Buat voucher promo baru secara tunggal atau massal.</p>
+                  </div>
+
+                  <form onSubmit={handleGenerateVouchers} className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Tipe Benefit</label>
+                        <select
+                          value={genVoucherType}
+                          onChange={(e) => setGenVoucherType(e.target.value as VoucherType)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        >
+                          <option value={VoucherType.DISCOUNT_PERCENT}>Discount % (Diskon Persentase)</option>
+                          <option value={VoucherType.NOMINAL}>Nominal Potongan (IDR)</option>
+                          <option value={VoucherType.FREE_ITEM}>Free Item (Produk Gratis)</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Nilai Benefit</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder={genVoucherType === VoucherType.DISCOUNT_PERCENT ? "Contoh: 10 (artinya 10%)" : 
+                                       genVoucherType === VoucherType.NOMINAL ? "Contoh: 15000" : "Contoh: Free Setrika 1kg"}
+                          value={genVoucherValue}
+                          onChange={(e) => setGenVoucherValue(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Minimal Transaksi (Rp)</label>
+                        <input
+                          type="number"
+                          value={genMinTransaction}
+                          onChange={(e) => setGenMinTransaction(Number(e.target.value))}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Tanggal Kedaluwarsa</label>
+                        <input
+                          type="date"
+                          required
+                          value={genExpiryDate}
+                          onChange={(e) => setGenExpiryDate(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t border-gray-50 pt-4">
+                      <div className="space-y-1 md:col-span-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Jumlah Cetak</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          value={genQuantity}
+                          onChange={(e) => setGenQuantity(Math.min(10, Math.max(1, Number(e.target.value))))}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm text-center font-bold"
+                        />
+                        <p className="text-[9px] text-natural-text-muted text-center mt-1">Maks. 10 voucher sekaligus</p>
+                      </div>
+
+                      <div className="space-y-1 md:col-span-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Nama Konsumen (Opsional)</label>
+                        <input
+                          type="text"
+                          placeholder="Konsumen khusus..."
+                          value={genCustomerName}
+                          onChange={(e) => setGenCustomerName(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      <div className="space-y-1 md:col-span-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">No HP (Opsional)</label>
+                        <input
+                          type="text"
+                          placeholder="No WA..."
+                          value={genCustomerPhone}
+                          onChange={(e) => setGenCustomerPhone(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isGeneratingVouchers}
+                      className="w-full py-3 bg-natural-primary text-white font-bold rounded-xl text-sm shadow-md hover:bg-opacity-95 transition-all flex items-center justify-center gap-2"
+                    >
+                      {isGeneratingVouchers ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Memproses pembuatan...
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="w-4 h-4" />
+                          Generate & Simpan Voucher
+                        </>
+                      )}
+                    </button>
+                  </form>
+                </div>
+
+                {/* VOUCHERS LIST */}
+                <div className="card-natural p-6 bg-white rounded-2xl border border-natural-border shadow-sm space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 pb-4">
+                    <h3 className="font-serif text-lg font-bold text-natural-text-dark">Daftar Voucher ({filteredVouchers.length})</h3>
+                    
+                    <div className="flex gap-2">
+                      <select
+                        value={voucherListFilterStatus}
+                        onChange={(e) => setVoucherListFilterStatus(e.target.value as any)}
+                        className="px-3 py-1.5 bg-white border border-natural-border rounded-lg text-xs font-semibold focus:outline-none"
+                      >
+                        <option value="all">Semua Status</option>
+                        <option value="active">Aktif</option>
+                        <option value="redeemed">Terpakai</option>
+                        <option value="expired">Expired</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="Cari voucher berdasarkan kode, nama atau nomor konsumen..."
+                      value={voucherListSearch}
+                      onChange={(e) => setVoucherListSearch(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-natural-primary"
+                    />
+                    <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-3" />
+                  </div>
+
+                  {/* SCROLLABLE LIST */}
+                  <div className="overflow-y-auto max-h-[350px] space-y-2.5 pr-1">
+                    {filteredVouchers.length === 0 ? (
+                      <div className="p-8 text-center text-xs text-natural-text-muted italic bg-gray-50 rounded-xl border border-dashed">
+                        Tidak ada voucher yang ditemukan.
+                      </div>
+                    ) : (
+                      filteredVouchers.map((v) => {
+                        const todayStr = new Date().toISOString().split('T')[0];
+                        const isExpired = !v.isRedeemed && v.expiryDate < todayStr;
+                        return (
+                          <div
+                            key={v.id}
+                            className={`p-4 rounded-xl border transition-all flex items-center justify-between gap-4 ${
+                              v.isRedeemed
+                              ? 'bg-gray-50/50 border-gray-100 opacity-65'
+                              : isExpired
+                              ? 'bg-red-50/30 border-red-100'
+                              : 'bg-white border-natural-border shadow-sm hover:border-natural-primary/30'
+                            }`}
+                          >
+                            <div className="space-y-1 min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-mono font-bold text-xs text-natural-text-dark bg-gray-100 px-2 py-0.5 rounded border">
+                                  {v.code}
+                                </span>
+                                <span className={`text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
+                                  v.isRedeemed
+                                  ? 'bg-gray-200 text-gray-600'
+                                  : isExpired
+                                  ? 'bg-red-100 text-red-700'
+                                  : 'bg-green-100 text-green-700'
+                                }`}>
+                                  {v.isRedeemed ? 'Terpakai' : isExpired ? 'Expired' : 'Aktif'}
+                                </span>
+                                <span className="text-[9px] text-natural-text-muted">{v.type}</span>
+                              </div>
+
+                              <p className="text-sm font-serif font-black text-natural-text-dark">
+                                {v.type === VoucherType.DISCOUNT_PERCENT ? `Diskon ${v.value}%` : 
+                                 v.type === VoucherType.NOMINAL ? `Potongan Rp ${Number(v.value).toLocaleString()}` : 
+                                 v.value}
+                              </p>
+
+                              <div className="text-[9px] text-natural-text-muted space-y-0.5 mt-1">
+                                <p>📅 Kedaluwarsa: {v.expiryDate}</p>
+                                {v.customerName && <p>👤 Konsumen: {v.customerName} ({v.customerPhone})</p>}
+                                {v.isRedeemed && <p>✅ Diredeem oleh PIC: {v.redeemedBy}</p>}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <button
+                                onClick={() => setSelectedVoucherForPrint(v)}
+                                className="p-2 bg-gray-50 hover:bg-gray-100 text-natural-text-dark border rounded-xl shadow-sm transition-colors"
+                                title="Cetak / Tampilkan Barcode"
+                              >
+                                <Printer className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteVoucher(v.id!)}
+                                className="p-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl transition-colors"
+                                title="Hapus Voucher"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </section>
+            </motion.div>
+          ) : activeTab === CATEGORIES[3] ? (
+            <motion.div
+              key="referral-tracking"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-6"
+            >
+              {/* HEADER & SUMMARY METRICS */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-natural-border shadow-sm">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <Award className="w-6 h-6 text-amber-500" />
+                    <h2 className="font-serif text-2xl text-natural-text-dark font-bold">Tracking Rekomendasi & Komisi Guide</h2>
+                  </div>
+                  <p className="text-xs text-natural-text-muted">Pencatatan referral guide/sopir, input manual nominal komisi (Rp), dan histori penyerahan komisi.</p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setEditingPartnerId(null);
+                      setPartnerName('');
+                      setPartnerPhone('');
+                      setPartnerRole('Tour Guide');
+                      setPartnerNotes('');
+                      setShowQuickPartnerModal(true);
+                    }}
+                    className="px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold text-xs rounded-xl flex items-center gap-2 border border-amber-200/60 transition-colors shadow-xs"
+                  >
+                    <User className="w-4 h-4 text-amber-600" />
+                    + Daftar Mitra
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setRedeemPartnerId('');
+                      setRedeemRewardInput('');
+                      setRedeemNotesInput('');
+                      setShowRedeemModal(true);
+                    }}
+                    className="px-4 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold text-xs rounded-xl flex items-center gap-2 border border-emerald-200/60 transition-colors shadow-xs"
+                  >
+                    <Wallet className="w-4 h-4 text-emerald-600" />
+                    Serahkan Komisi / Fee
+                  </button>
+
+                  <div className="relative group">
+                    <button className="px-4 py-2 bg-slate-800 text-white font-bold text-xs rounded-xl flex items-center gap-2 hover:bg-slate-900 transition-colors shadow-sm">
+                      <Download className="w-4 h-4" />
+                      Export CSV Data
+                    </button>
+                    <div className="absolute right-0 top-full mt-1 w-56 bg-white rounded-xl shadow-xl border border-gray-100 py-2 hidden group-hover:block z-30">
+                      <button
+                        onClick={exportReferralPartnersCSV}
+                        className="w-full text-left px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5 text-amber-600" />
+                        Export Database Mitra (CSV)
+                      </button>
+                      <button
+                        onClick={exportReferralTransactionsCSV}
+                        className="w-full text-left px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5 text-blue-600" />
+                        Export Transaksi Rekomendasi (CSV)
+                      </button>
+                      <button
+                        onClick={exportReferralRedemptionsCSV}
+                        className="w-full text-left px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                        Export Histori Penyerahan Komisi (CSV)
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* STATS CARDS GRID */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white p-5 rounded-2xl border border-natural-border shadow-xs flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                    <Users className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-natural-text-muted">Total Mitra Terdaftar</p>
+                    <p className="text-2xl font-serif font-black text-natural-text-dark">{referralPartners.length} <span className="text-xs font-normal font-sans text-gray-500">Orang</span></p>
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-natural-border shadow-xs flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                    <TrendingUp className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-natural-text-muted">Total Nilai Transaksi</p>
+                    <p className="text-xl font-serif font-black text-natural-text-dark">
+                      Rp {referralTransactions.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0).toLocaleString('id-ID')}
+                    </p>
+                    <p className="text-[10px] text-gray-500">{referralTransactions.length} kali rekomendasi</p>
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-natural-border shadow-xs flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                    <Coins className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-natural-text-muted">Total Tx Belum Diperhitungkan</p>
+                    <p className="text-xl font-serif font-black text-amber-600">
+                      Rp {Object.values(partnerStatsMap).reduce((acc: number, curr: any) => acc + (curr.remainingUnsettledTx || 0), 0).toLocaleString('id-ID')}
+                    </p>
+                    <p className="text-[10px] text-gray-500">Nilai transaksi belum diklaim fee</p>
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-natural-border shadow-xs flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                    <Wallet className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-natural-text-muted">Total Fee Diserahkan</p>
+                    <p className="text-xl font-serif font-black text-emerald-700">
+                      Rp {referralRedemptions.reduce((acc, curr) => acc + (Number(curr.rewardAmount) || 0), 0).toLocaleString('id-ID')}
+                    </p>
+                    <p className="text-[10px] text-gray-500">{referralRedemptions.length} kali penyerahan fee</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* NAVIGATION TABS FOR REFERRAL */}
+              <div className="flex items-center gap-2 border-b border-gray-200 pb-1">
+                <button
+                  onClick={() => setReferralSubTab('transactions')}
+                  className={`px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center gap-2 ${
+                    referralSubTab === 'transactions'
+                      ? 'bg-natural-primary text-white shadow-sm'
+                      : 'bg-white text-natural-text-muted hover:text-natural-text-dark border border-gray-200'
+                  }`}
+                >
+                  <Plus className="w-4 h-4" />
+                  Input & Histori Transaksi ({referralTransactions.length})
+                </button>
+
+                <button
+                  onClick={() => setReferralSubTab('partners')}
+                  className={`px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center gap-2 ${
+                    referralSubTab === 'partners'
+                      ? 'bg-natural-primary text-white shadow-sm'
+                      : 'bg-white text-natural-text-muted hover:text-natural-text-dark border border-gray-200'
+                  }`}
+                >
+                  <Users className="w-4 h-4" />
+                  Database Mitra / Guide ({referralPartners.length})
+                </button>
+
+                <button
+                  onClick={() => setReferralSubTab('redeem')}
+                  className={`px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center gap-2 ${
+                    referralSubTab === 'redeem'
+                      ? 'bg-natural-primary text-white shadow-sm'
+                      : 'bg-white text-natural-text-muted hover:text-natural-text-dark border border-gray-200'
+                  }`}
+                >
+                  <Wallet className="w-4 h-4" />
+                  Histori Penyerahan Komisi ({referralRedemptions.length})
+                </button>
+              </div>
+
+              {/* SUB-TAB 1: INPUT & HISTORI TRANSAKSI */}
+              {referralSubTab === 'transactions' && (
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
+                  {/* LEFT FORM (5 COLS) */}
+                  <div className="xl:col-span-5 bg-white p-6 rounded-2xl border border-natural-border shadow-sm space-y-5">
+                    <div className="border-b border-gray-100 pb-3">
+                      <h3 className="font-serif text-lg font-bold text-natural-text-dark flex items-center gap-2">
+                        <Coins className="w-5 h-5 text-amber-500" />
+                        Input Transaksi Rekomendasi
+                      </h3>
+                      <p className="text-xs text-natural-text-muted mt-0.5">Catat nominal transaksi konsumen saja. Perhitungan komisi dilakukan pada menu Database Mitra.</p>
+                    </div>
+
+                    <form onSubmit={handleSaveReferralTransaction} className="space-y-4">
+                      {/* Pemberi Rekomendasi Auto-Search / Select */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between items-center">
+                          <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">
+                            Pemberi Rekomendasi (Guide / Sopir / Hotel) *
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingPartnerId(null);
+                              setPartnerName('');
+                              setPartnerPhone('');
+                              setPartnerRole('Tour Guide');
+                              setPartnerNotes('');
+                              setShowQuickPartnerModal(true);
+                            }}
+                            className="text-[11px] text-amber-700 font-bold hover:underline flex items-center gap-1"
+                          >
+                            <Plus className="w-3 h-3" />
+                            + Tambah Mitra Baru
+                          </button>
+                        </div>
+
+                        <div className="relative">
+                          <input
+                            type="text"
+                            placeholder="Cari nama atau No HP mitra..."
+                            value={transPartnerInput}
+                            onChange={(e) => {
+                              setTransPartnerInput(e.target.value);
+                              setTransPartnerId('');
+                            }}
+                            className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                          />
+                          {transPartnerInput && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTransPartnerInput('');
+                                setTransPartnerId('');
+                              }}
+                              className="absolute right-3 top-3 text-gray-400 hover:text-gray-600"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Matching suggestions dropdown if user typed something */}
+                        {transPartnerInput && !transPartnerId && (
+                          <div className="bg-white border border-gray-200 rounded-xl shadow-lg max-h-48 overflow-y-auto divide-y divide-gray-100 text-xs">
+                            {referralPartners
+                              .filter(p => 
+                                p.name.toLowerCase().includes(transPartnerInput.toLowerCase()) ||
+                                p.phone.includes(transPartnerInput)
+                              )
+                              .slice(0, 5)
+                              .map(p => (
+                                <div
+                                  key={`suggest-${p.id}`}
+                                  onClick={() => {
+                                    setTransPartnerId(p.id!);
+                                    setTransPartnerInput(p.name);
+                                  }}
+                                  className="p-3 hover:bg-amber-50/50 cursor-pointer flex justify-between items-center transition-colors"
+                                >
+                                  <div>
+                                    <p className="font-bold text-natural-text-dark">{p.name}</p>
+                                    <p className="text-[10px] text-natural-text-muted">{p.phone} • {p.role}</p>
+                                  </div>
+                                  <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+                                    Sisa Tx Belum Diperhitungkan: Rp {(partnerStatsMap[p.id!]?.remainingUnsettledTx || 0).toLocaleString('id-ID')}
+                                  </span>
+                                </div>
+                              ))}
+                            {referralPartners.filter(p => 
+                              p.name.toLowerCase().includes(transPartnerInput.toLowerCase()) ||
+                              p.phone.includes(transPartnerInput)
+                            ).length === 0 && (
+                              <div className="p-3 text-center text-natural-text-muted italic">
+                                Mitra tidak ditemukan.{' '}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingPartnerId(null);
+                                    setPartnerName(transPartnerInput);
+                                    setPartnerPhone('');
+                                    setPartnerRole('Tour Guide');
+                                    setShowQuickPartnerModal(true);
+                                  }}
+                                  className="text-amber-700 font-bold underline ml-1"
+                                >
+                                  Daftarkan "{transPartnerInput}" sekarang?
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Selected Partner Status Card */}
+                        {activeMatchedPartner && (
+                          <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl flex items-center justify-between text-xs animate-fade-in">
+                            <div className="flex items-center gap-2">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                              <div>
+                                <p className="font-bold text-natural-text-dark">{activeMatchedPartner.name}</p>
+                                <p className="text-[10px] text-natural-text-muted">{activeMatchedPartner.phone} • {activeMatchedPartner.role}</p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[10px] text-natural-text-muted uppercase font-bold">Sisa Tx Belum Diperhitungkan</p>
+                              <p className="text-sm font-black text-amber-700">
+                                Rp {(partnerStatsMap[activeMatchedPartner.id!]?.remainingUnsettledTx || 0).toLocaleString('id-ID')}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Tanggal Transaksi */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Tanggal Transaksi *</label>
+                        <input
+                          type="date"
+                          required
+                          value={transDate}
+                          onChange={(e) => setTransDate(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      {/* Nama Konsumen / Tamu */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Nama Konsumen / Tamu Laundry *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Contoh: Bpk. Budi / Kamar 204"
+                          value={transCustomerName}
+                          onChange={(e) => setTransCustomerName(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      {/* Nilai Transaksi Konsumen */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Nominal Transaksi Konsumen (Rp) *</label>
+                        <input
+                          type="number"
+                          required
+                          min="1"
+                          placeholder="Contoh: 150000"
+                          value={transAmount}
+                          onChange={(e) => setTransAmount(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm font-bold text-natural-text-dark"
+                        />
+                      </div>
+
+                      {/* Catatan / Nota */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Catatan / Nomor Nota (Opsional)</label>
+                        <input
+                          type="text"
+                          placeholder="Contoh: Nota #1024, Express Kiloan"
+                          value={transNotes}
+                          onChange={(e) => setTransNotes(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={isSavingTrans}
+                        className="w-full py-3 bg-natural-primary hover:bg-natural-primary/90 text-white font-bold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2"
+                      >
+                        {isSavingTrans ? (
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                          <>
+                            <Check className="w-5 h-5" />
+                            Simpan Transaksi Rekomendasi
+                          </>
+                        )}
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* RIGHT HISTORY LIST (7 COLS) */}
+                  <div className="xl:col-span-7 bg-white p-6 rounded-2xl border border-natural-border shadow-sm space-y-4">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-gray-100 pb-3">
+                      <div>
+                        <h3 className="font-serif text-lg font-bold text-natural-text-dark">Riwayat Transaksi Rekomendasi</h3>
+                        <p className="text-xs text-natural-text-muted">Total {referralTransactions.length} transaksi konsumen tercatat.</p>
+                      </div>
+
+                      <div className="relative w-full sm:w-64">
+                        <Search className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
+                        <input
+                          type="text"
+                          placeholder="Cari transaksi / mitra..."
+                          value={referralSearch}
+                          onChange={(e) => setReferralSearch(e.target.value)}
+                          className="w-full pl-9 pr-3 py-1.5 bg-gray-50 border border-natural-border rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-natural-primary"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+                      {referralTransactions.length === 0 ? (
+                        <div className="p-12 text-center text-natural-text-muted text-xs italic">
+                          Belum ada transaksi rekomendasi yang tercatat.
+                        </div>
+                      ) : (
+                        referralTransactions
+                          .filter(t => {
+                            const queryStr = referralSearch.toLowerCase().trim();
+                            if (!queryStr) return true;
+                            return (
+                              (t.partnerName && t.partnerName.toLowerCase().includes(queryStr)) ||
+                              (t.partnerPhone && t.partnerPhone.includes(queryStr)) ||
+                              (t.customerName && t.customerName.toLowerCase().includes(queryStr)) ||
+                              (t.notes && t.notes.toLowerCase().includes(queryStr))
+                            );
+                          })
+                          .map(t => {
+                            return (
+                              <div
+                                key={`ref-tx-${t.id}`}
+                                className="p-4 bg-gray-50/70 hover:bg-gray-50 border border-gray-200/80 rounded-xl transition-all flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3"
+                              >
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-[10px] font-bold text-gray-500 bg-white px-2 py-0.5 rounded border">
+                                      {t.date}
+                                    </span>
+                                    <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                                      <User className="w-3 h-3" />
+                                      {t.partnerName} ({t.partnerPhone})
+                                    </span>
+                                  </div>
+
+                                  <p className="text-sm font-bold text-natural-text-dark">
+                                    Konsumen: <span className="font-semibold text-natural-primary">{t.customerName}</span>
+                                  </p>
+                                  {t.notes && (
+                                    <p className="text-xs text-natural-text-muted italic">
+                                      📝 {t.notes}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-4 pt-2 sm:pt-0 border-t sm:border-0 border-gray-200">
+                                  <div className="text-left sm:text-right">
+                                    <p className="text-xs text-natural-text-muted">Nominal Transaksi Konsumen:</p>
+                                    <p className="text-sm font-serif font-black text-natural-text-dark">Rp {Number(t.amount).toLocaleString('id-ID')}</p>
+                                  </div>
+
+                                  <button
+                                    onClick={() => handleDeleteReferralTransaction(t.id!)}
+                                    className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                    title="Hapus Transaksi"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* SUB-TAB 2: DATABASE MITRA / PEMBERI REKOMENDASI */}
+              {referralSubTab === 'partners' && (
+                <div className="bg-white p-6 rounded-2xl border border-natural-border shadow-sm space-y-6">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 pb-4">
+                    <div>
+                      <h3 className="font-serif text-xl font-bold text-natural-text-dark">Database Mitra / Pemberi Rekomendasi</h3>
+                      <p className="text-xs text-natural-text-muted">Kelola data guide, sopir, hotel, atau kolega yang sering merekomendasikan Dina Laundry.</p>
+                    </div>
+
+                    <div className="flex items-center gap-3 w-full sm:w-auto">
+                      <div className="relative flex-1 sm:w-64">
+                        <Search className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
+                        <input
+                          type="text"
+                          placeholder="Cari nama / HP mitra..."
+                          value={referralSearch}
+                          onChange={(e) => setReferralSearch(e.target.value)}
+                          className="w-full pl-9 pr-3 py-1.5 bg-gray-50 border border-natural-border rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-natural-primary"
+                        />
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          if (referralPartners.length > 0) {
+                            setSelectedReminderPartner(referralPartners[0]);
+                          }
+                          setShowReminderModal(true);
+                        }}
+                        className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-2xs transition-colors shrink-0"
+                        title="Kirim Pesan Reminder & Motivasi Rekomendasi"
+                      >
+                        <Bell className="w-4 h-4 text-amber-600 animate-pulse" />
+                        <span>Kirim Reminder WA</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setEditingPartnerId(null);
+                          setPartnerName('');
+                          setPartnerPhone('');
+                          setPartnerRole('Tour Guide');
+                          setPartnerNotes('');
+                          setShowQuickPartnerModal(true);
+                        }}
+                        className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl flex items-center gap-2 shadow-xs transition-colors shrink-0"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Tambah Mitra Baru
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* PARTNERS GRID */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                    {referralPartners.length === 0 ? (
+                      <div className="col-span-full py-16 text-center text-natural-text-muted text-xs italic">
+                        Belum ada data mitra / pemberi rekomendasi. Klik "+ Tambah Mitra Baru" untuk mendaftarkan.
+                      </div>
+                    ) : (
+                      referralPartners
+                        .filter(p => {
+                          const queryStr = referralSearch.toLowerCase().trim();
+                          if (!queryStr) return true;
+                          return (
+                            (p.name && p.name.toLowerCase().includes(queryStr)) ||
+                            (p.phone && p.phone.includes(queryStr)) ||
+                            (p.role && p.role.toLowerCase().includes(queryStr))
+                          );
+                        })
+                        .map(p => {
+                          const stats = partnerStatsMap[p.id!] || {
+                            totalTxAmount: 0,
+                            txCount: 0,
+                            totalDeductedTxAmount: 0,
+                            remainingUnsettledTx: 0,
+                            totalCommissionPaid: 0
+                          };
+
+                          return (
+                            <div
+                              key={`partner-card-${p.id}`}
+                              className="p-5 bg-white border border-natural-border hover:border-amber-300 rounded-2xl shadow-xs transition-all space-y-4 relative group"
+                            >
+                              <div className="flex justify-between items-start gap-2">
+                                <div className="space-y-0.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 px-2 py-0.5 rounded-md">
+                                      {p.role || 'Partner'}
+                                    </span>
+                                  </div>
+                                  <h4 className="font-serif font-bold text-lg text-natural-text-dark">{p.name}</h4>
+                                  <p className="text-xs text-natural-text-muted flex items-center gap-1 font-mono">
+                                    <PhoneCall className="w-3 h-3 text-amber-600" />
+                                    {p.phone}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => handleEditPartner(p)}
+                                    className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                                    title="Edit Data Mitra"
+                                  >
+                                    <Pencil className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeletePartner(p.id!, p.name)}
+                                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                    title="Hapus Mitra"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {p.notes && (
+                                <p className="text-xs text-natural-text-muted bg-gray-50 p-2.5 rounded-xl italic">
+                                  "{p.notes}"
+                                </p>
+                              )}
+
+                              {/* STATS MATRIX */}
+                              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-100 text-xs">
+                                <div className="bg-gray-50 p-2.5 rounded-xl">
+                                  <p className="text-[10px] text-gray-500 font-bold uppercase">Total Rekomendasi</p>
+                                  <p className="font-serif font-black text-natural-text-dark text-sm">
+                                    Rp {stats.totalTxAmount.toLocaleString('id-ID')}
+                                  </p>
+                                  <p className="text-[10px] text-gray-400">{stats.txCount} transaksi</p>
+                                </div>
+
+                                <div className="bg-amber-50/80 p-2.5 rounded-xl border border-amber-100">
+                                  <p className="text-[10px] text-amber-800 font-bold uppercase">Sisa Tx Belum Diperhitungkan</p>
+                                  <p className="font-serif font-black text-amber-700 text-sm">
+                                    Rp {stats.remainingUnsettledTx.toLocaleString('id-ID')}
+                                  </p>
+                                  <p className="text-[9px] text-amber-600">Sudah klaim: Rp {stats.totalDeductedTxAmount.toLocaleString('id-ID')}</p>
+                                </div>
+                              </div>
+
+                              <div className="text-[11px] text-emerald-700 bg-emerald-50/70 px-3 py-1.5 rounded-xl border border-emerald-100 flex justify-between items-center font-semibold">
+                                <span>Total Fee Diserahkan:</span>
+                                <span className="font-bold">Rp {stats.totalCommissionPaid.toLocaleString('id-ID')}</span>
+                              </div>
+
+                              {/* ACTION BUTTONS */}
+                              <div className="space-y-2 pt-1">
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => {
+                                      setTransPartnerId(p.id!);
+                                      setTransPartnerInput(p.name);
+                                      setReferralSubTab('transactions');
+                                    }}
+                                    className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-natural-text-dark font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                    Input Transaksi
+                                  </button>
+
+                                  <button
+                                    onClick={() => {
+                                      setRedeemPartnerId(p.id!);
+                                      setDeductedTxInput(stats.remainingUnsettledTx > 0 ? stats.remainingUnsettledTx.toString() : '');
+                                      setRedeemRewardInput('');
+                                      setRedeemNotesInput('');
+                                      setShowRedeemModal(true);
+                                    }}
+                                    className="px-3 py-2 font-bold text-xs rounded-xl transition-colors flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+                                  >
+                                    <Wallet className="w-3.5 h-3.5" />
+                                    Input Komisi / Fee
+                                  </button>
+                                </div>
+
+                                <button
+                                  onClick={() => {
+                                    setSelectedReminderPartner(p);
+                                    setShowReminderModal(true);
+                                  }}
+                                  className="w-full py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
+                                >
+                                  <Bell className="w-3.5 h-3.5 text-amber-600" />
+                                  <span>Kirim Reminder WA (Status Sisa & Motivasi)</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* SUB-TAB 3: HISTORI PENYERAHAN KOMISI */}
+              {referralSubTab === 'redeem' && (
+                <div className="bg-white p-6 rounded-2xl border border-natural-border shadow-sm space-y-5">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 pb-4">
+                    <div>
+                      <h3 className="font-serif text-xl font-bold text-natural-text-dark flex items-center gap-2">
+                        <Wallet className="w-5 h-5 text-emerald-600" />
+                        Histori Penyerahan & Pencairan Komisi / Fee Guide
+                      </h3>
+                      <p className="text-xs text-natural-text-muted">Catatan pengurang transaksi dan pembayaran komisi tunai kepada mitra pemberi rekomendasi.</p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={exportReferralRedemptionsCSV}
+                        className="px-3.5 py-2.5 bg-gray-100 hover:bg-gray-200 text-natural-text-dark font-bold text-xs rounded-xl flex items-center gap-1.5 transition-colors border border-gray-200"
+                      >
+                        <Download className="w-4 h-4" />
+                        Export CSV
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setRedeemPartnerId('');
+                          setDeductedTxInput('');
+                          setRedeemRewardInput('');
+                          setRedeemNotesInput('');
+                          setShowRedeemModal(true);
+                        }}
+                        className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center gap-2 shadow-sm transition-colors"
+                      >
+                        <Plus className="w-4 h-4" />
+                        + Catat Penyerahan Komisi Baru
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {referralRedemptions.length === 0 ? (
+                      <div className="p-16 text-center text-natural-text-muted text-xs italic">
+                        Belum ada riwayat penyerahan komisi.
+                      </div>
+                    ) : (
+                      referralRedemptions.map(r => (
+                        <div
+                          key={`redeem-row-${r.id}`}
+                          className="p-4 bg-emerald-50/40 border border-emerald-100 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold text-gray-500 bg-white px-2 py-0.5 rounded border">
+                                {r.date}
+                              </span>
+                              <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-full">
+                                {r.partnerName} ({r.partnerPhone})
+                              </span>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs pt-1">
+                              <p className="text-gray-600">
+                                Transaksi Diperhitungkan (Pengurang): <span className="font-bold text-gray-900">Rp {Number(r.deductedTxAmount || 0).toLocaleString('id-ID')}</span>
+                              </p>
+                              <p className="text-emerald-900 font-bold">
+                                Fee Diserahkan: <span className="text-emerald-700 font-serif font-black text-base">Rp {Number(r.rewardAmount || 0).toLocaleString('id-ID')}</span>
+                              </p>
+                            </div>
+                            {r.notes && (
+                              <p className="text-xs text-natural-text-muted italic">
+                                📌 {r.notes}
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-2">
+                            <button
+                              onClick={() => {
+                                setSelectedRedemptionReceipt(r);
+                                setShowReceiptModal(true);
+                              }}
+                              className="px-3 py-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shadow-2xs"
+                              title="Lihat / Cetak / Share Kuitansi Invoice"
+                            >
+                              <FileText className="w-3.5 h-3.5 text-emerald-700" />
+                              <span>Kuitansi / Invoice</span>
+                            </button>
+
+                            <button
+                              onClick={() => handleDeleteRedemption(r.id!)}
+                              className="p-2 text-red-500 hover:bg-red-100 rounded-lg transition-colors"
+                              title="Batalkan / Hapus Pencatatan Komisi"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* MODAL: DAFTAR / EDIT MITRA QUICK MODAL */}
+              {showQuickPartnerModal && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+                  <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-5 border border-natural-border shadow-xl">
+                    <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+                      <h3 className="font-serif font-bold text-lg text-natural-text-dark flex items-center gap-2">
+                        <User className="w-5 h-5 text-amber-600" />
+                        {editingPartnerId ? 'Edit Data Mitra' : 'Daftarkan Pemberi Rekomendasi'}
+                      </h3>
+                      <button
+                        onClick={() => {
+                          setShowQuickPartnerModal(false);
+                          setEditingPartnerId(null);
+                          setPartnerName('');
+                          setPartnerPhone('');
+                          setPartnerRole('Tour Guide');
+                          setPartnerNotes('');
+                        }}
+                        className="text-gray-400 hover:text-gray-600"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    <form onSubmit={handleSavePartner} className="space-y-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Nama Lengkap Mitra / Guide *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Contoh: Pak Nyoman Guide"
+                          value={partnerName}
+                          onChange={(e) => setPartnerName(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Nomor WhatsApp / HP *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Contoh: 08123456789"
+                          value={partnerPhone}
+                          onChange={(e) => setPartnerPhone(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Pekerjaan / Peran</label>
+                        <select
+                          value={partnerRole}
+                          onChange={(e) => setPartnerRole(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        >
+                          <option value="Tour Guide">Tour Guide / Pemandu Wisata</option>
+                          <option value="Driver / Sopir">Driver / Sopir Travel</option>
+                          <option value="Hotel / Villa Staff">Resepsionis Hotel / Villa</option>
+                          <option value="Kolega / Teman">Kolega / Pelanggan Loyal</option>
+                          <option value="Lainnya">Lainnya</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Catatan Tambahan (Opsional)</label>
+                        <textarea
+                          placeholder="Contoh: Guide Bali Tours, bahasa Inggris & Jepang..."
+                          value={partnerNotes}
+                          onChange={(e) => setPartnerNotes(e.target.value)}
+                          rows={2}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      <div className="flex gap-3 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowQuickPartnerModal(false);
+                            setEditingPartnerId(null);
+                            setPartnerName('');
+                            setPartnerPhone('');
+                            setPartnerRole('Tour Guide');
+                            setPartnerNotes('');
+                          }}
+                          className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs rounded-xl"
+                        >
+                          Batal
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isSavingPartner}
+                          className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-sm"
+                        >
+                          {isSavingPartner ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            'Simpan Database'
+                          )}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
+
+              {/* MODAL: PENYERAHAN / PENCAIRAN KOMISI */}
+              {showRedeemModal && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+                  <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-5 border border-natural-border shadow-xl">
+                    <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+                      <h3 className="font-serif font-bold text-lg text-natural-text-dark flex items-center gap-2">
+                        <Wallet className="w-5 h-5 text-emerald-600" />
+                        Pencatatan Penyerahan Komisi Guide
+                      </h3>
+                      <button
+                        onClick={() => setShowRedeemModal(false)}
+                        className="text-gray-400 hover:text-gray-600"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    <form onSubmit={handleSaveRedemption} className="space-y-4">
+                      {/* Select Partner */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Pilih Mitra Pemberi Rekomendasi *</label>
+                        <select
+                          required
+                          value={redeemPartnerId}
+                          onChange={(e) => {
+                            setRedeemPartnerId(e.target.value);
+                            const pStats = partnerStatsMap[e.target.value];
+                            if (pStats && pStats.remainingUnsettledTx > 0) {
+                              setDeductedTxInput(pStats.remainingUnsettledTx.toString());
+                            } else {
+                              setDeductedTxInput('');
+                            }
+                          }}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm font-semibold"
+                        >
+                          <option value="">-- Pilih Mitra --</option>
+                          {referralPartners.map(p => {
+                            const remaining = partnerStatsMap[p.id!]?.remainingUnsettledTx || 0;
+                            return (
+                              <option key={`redeem-opt-${p.id}`} value={p.id}>
+                                {p.name} ({p.phone}) — Belum Diperhitungkan: Rp {remaining.toLocaleString('id-ID')}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      {/* Live Transaction Stats Info */}
+                      {redeemPartnerId && partnerStatsMap[redeemPartnerId] && (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-1 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Total Transaksi Konsumen:</span>
+                            <span className="font-bold text-gray-900">Rp {partnerStatsMap[redeemPartnerId].totalTxAmount.toLocaleString('id-ID')}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Sudah Diperhitungkan:</span>
+                            <span className="font-bold text-gray-900">Rp {partnerStatsMap[redeemPartnerId].totalDeductedTxAmount.toLocaleString('id-ID')}</span>
+                          </div>
+                          <div className="flex justify-between pt-1 border-t border-amber-200">
+                            <span className="font-bold text-amber-900">Sisa Belum Diperhitungkan:</span>
+                            <span className="font-serif font-black text-amber-800 text-sm">
+                              Rp {partnerStatsMap[redeemPartnerId].remainingUnsettledTx.toLocaleString('id-ID')}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Tanggal Penyerahan */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Tanggal Penyerahan *</label>
+                        <input
+                          type="date"
+                          required
+                          value={redeemDate}
+                          onChange={(e) => setRedeemDate(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      {/* Nilai Transaksi Diperhitungkan (Pengurang Akumulasi) */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider text-amber-900">
+                          Nilai Transaksi Yang Diperhitungkan / Pengurang (Rp) *
+                        </label>
+                        <input
+                          type="number"
+                          required
+                          min="1"
+                          placeholder="Contoh: 1000000"
+                          value={deductedTxInput}
+                          onChange={(e) => setDeductedTxInput(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-amber-50/60 border border-amber-300 rounded-xl focus:outline-none focus:ring-1 focus:ring-amber-500 text-sm font-bold text-amber-900"
+                        />
+                        <p className="text-[10px] text-gray-500 italic">
+                          💡 Nominal transaksi konsumen yang dijadikan acuan perhitungan komisi saat ini.
+                        </p>
+                      </div>
+
+                      {/* Nominal Komisi Diberikan (Rp) */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider text-emerald-900">
+                          Nominal Fee / Komisi Diserahkan (Rp) *
+                        </label>
+                        <input
+                          type="number"
+                          required
+                          min="1"
+                          placeholder="Contoh: 100000 (Staff Input Manual)"
+                          value={redeemRewardInput}
+                          onChange={(e) => setRedeemRewardInput(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-emerald-50/60 border border-emerald-300 rounded-xl focus:outline-none focus:ring-1 focus:ring-emerald-500 text-sm font-bold text-emerald-900"
+                        />
+                        <p className="text-[10px] text-gray-500 italic">
+                          💡 Nominal rupiah komisi tunai/transfer yang diberikan secara manual oleh staff.
+                        </p>
+                      </div>
+
+                      {/* Catatan / Bukti */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-natural-text-muted uppercase tracking-wider">Catatan / Keterangan Penyerahan</label>
+                        <input
+                          type="text"
+                          placeholder="Contoh: Fee 10% diserahkan tunai oleh Staff Dina"
+                          value={redeemNotesInput}
+                          onChange={(e) => setRedeemNotesInput(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-sm"
+                        />
+                      </div>
+
+                      <div className="flex gap-3 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowRedeemModal(false)}
+                          className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs rounded-xl"
+                        >
+                          Batal
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isSavingRedemption}
+                          className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-sm"
+                        >
+                          {isSavingRedemption ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            'Simpan Penyerahan'
+                          )}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
+
+              {/* MODAL: BUKTI KUITANSI INVOICE PENYERAHAN KOMISI (PRINT PDF & WA SHARE) */}
+              {showReceiptModal && selectedRedemptionReceipt && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
+                  <div className="bg-white rounded-2xl max-w-lg w-full p-6 sm:p-8 space-y-6 border border-natural-border shadow-2xl relative my-8">
+                    
+                    {/* Modal Header Controls (no-print) */}
+                    <div className="flex justify-between items-center pb-4 border-b border-gray-100 no-print">
+                      <div className="flex items-center gap-2">
+                        <FileText className="w-5 h-5 text-emerald-600" />
+                        <h3 className="font-serif font-bold text-lg text-natural-text-dark">
+                          Kuitansi Bukti Penyerahan Fee
+                        </h3>
+                      </div>
+                      <button
+                        onClick={() => setShowReceiptModal(false)}
+                        className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    {/* PRINTABLE RECEIPT CONTENT CONTAINER */}
+                    <div id="printable-receipt-area" className="bg-white p-6 sm:p-8 rounded-2xl border border-gray-200 space-y-6 text-gray-800 shadow-xs">
+                      
+                      {/* Invoice Branding & Status Header */}
+                      <div className="flex justify-between items-start border-b-2 border-emerald-600 pb-4">
+                        <div>
+                          <h2 className="font-serif font-black text-xl text-emerald-900 tracking-tight">DINA LAUNDRY</h2>
+                          <p className="text-[11px] text-gray-600 font-medium">Sistem Mitra & Tour Guide Referral</p>
+                          <p className="text-[10px] text-gray-400 mt-0.5">Bukti Resmi Penyerahan Fee Komisi</p>
+                        </div>
+                        <div className="text-right">
+                          <span className="inline-block px-2.5 py-1 bg-emerald-100 text-emerald-800 text-[10px] font-black uppercase tracking-wider rounded-md mb-1">
+                            ✓ LUNAS / DISERAHKAN
+                          </span>
+                          <p className="text-xs font-mono font-bold text-gray-700">
+                            INV-FEE-{(selectedRedemptionReceipt.id || '001').slice(-6).toUpperCase()}
+                          </p>
+                          <p className="text-[11px] text-gray-500">Tgl: {selectedRedemptionReceipt.date}</p>
+                        </div>
+                      </div>
+
+                      {/* Info Penerima / Mitra */}
+                      <div className="bg-gray-50 p-4 rounded-xl border border-gray-200/80 space-y-2 text-xs">
+                        <p className="text-[10px] uppercase tracking-wider font-bold text-gray-400">Diberikan Kepada (Pemberi Rekomendasi):</p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <p className="text-xs font-bold text-gray-900">{selectedRedemptionReceipt.partnerName}</p>
+                            <p className="text-[11px] text-gray-600">{selectedRedemptionReceipt.partnerPhone}</p>
+                          </div>
+                          <div className="text-left sm:text-right">
+                            <span className="text-[10px] bg-amber-100 text-amber-900 px-2 py-0.5 rounded-full font-bold">
+                              Mitra / Tour Guide
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Rincian Perhitungan Fee */}
+                      <div className="space-y-2">
+                        <p className="text-[10px] uppercase tracking-wider font-bold text-gray-400">Rincian Perhitungan Fee Komisi:</p>
+                        <div className="border border-gray-200 rounded-xl overflow-hidden text-xs">
+                          <div className="flex justify-between items-center p-3 bg-gray-50 border-b border-gray-200">
+                            <span className="text-gray-600 font-medium">Nilai Transaksi Konsumen Diperhitungkan</span>
+                            <span className="font-bold text-gray-900">Rp {Number(selectedRedemptionReceipt.deductedTxAmount || 0).toLocaleString('id-ID')}</span>
+                          </div>
+                          <div className="flex justify-between items-center p-3.5 bg-emerald-50/80 text-emerald-950 font-bold border-b border-gray-200">
+                            <span className="text-xs">Nominal Fee / Komisi Diserahkan</span>
+                            <span className="text-base font-serif font-black text-emerald-700">Rp {Number(selectedRedemptionReceipt.rewardAmount || 0).toLocaleString('id-ID')}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Catatan / Keterangan */}
+                      <div className="text-xs space-y-1">
+                        <p className="text-[10px] uppercase tracking-wider font-bold text-gray-400">Catatan / Keterangan:</p>
+                        <p className="bg-gray-50 p-3 rounded-lg border border-gray-100 italic text-gray-600">
+                          {selectedRedemptionReceipt.notes || 'Penyerahan fee/komisi tunai diserahkan oleh Staff Dina Laundry.'}
+                        </p>
+                      </div>
+
+                      {/* Tanda Tangan Digital Block */}
+                      <div className="pt-6 border-t border-gray-200 grid grid-cols-2 gap-4 text-center text-xs">
+                        <div>
+                          <p className="text-[10px] text-gray-400 font-bold">Diserahkan Oleh (Staff):</p>
+                          <div className="h-12 flex items-end justify-center">
+                            <p className="font-bold text-gray-800 border-b border-gray-400 px-4 pb-0.5 inline-block">Staff Dina Laundry</p>
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-gray-400 font-bold">Diterima Oleh (Guide/Mitra):</p>
+                          <div className="h-12 flex items-end justify-center">
+                            <p className="font-bold text-gray-800 border-b border-gray-400 px-4 pb-0.5 inline-block">{selectedRedemptionReceipt.partnerName}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <p className="text-[9px] text-center text-gray-400 italic pt-2">
+                        Terima kasih atas rekomendasi dan kemitraan dengan Dina Laundry. Dokumen kuitansi ini sah sebagai bukti penyerahan komisi.
+                      </p>
+                    </div>
+
+                    {/* FOOTER ACTIONS (no-print) */}
+                    <div className="space-y-3 no-print pt-2 border-t border-gray-100">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {/* Download PDF Button */}
+                        <button
+                          onClick={() => handleDownloadPdf(selectedRedemptionReceipt)}
+                          disabled={isGeneratingPdf}
+                          className="py-2.5 px-4 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-sm transition-colors disabled:opacity-50"
+                        >
+                          {isGeneratingPdf ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Download className="w-4 h-4" />
+                          )}
+                          <span>{isGeneratingPdf ? 'Membuat PDF...' : 'Unduh File PDF'}</span>
+                        </button>
+
+                        {/* Print in New Window / Popup Button */}
+                        <button
+                          onClick={() => handlePrintInNewWindow(selectedRedemptionReceipt)}
+                          className="py-2.5 px-4 bg-gray-800 hover:bg-gray-900 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-sm transition-colors"
+                        >
+                          <Printer className="w-4 h-4" />
+                          <span>Cetak (Jendela Baru)</span>
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {/* WhatsApp Share Button */}
+                        <a
+                          href={getWhatsAppShareUrl(selectedRedemptionReceipt)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-sm transition-colors"
+                        >
+                          <Share2 className="w-4 h-4" />
+                          <span>Kirim via WhatsApp</span>
+                        </a>
+
+                        <button
+                          onClick={() => copyWhatsAppText(selectedRedemptionReceipt)}
+                          className="py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 border border-emerald-200 transition-colors"
+                        >
+                          {copiedWaText ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                          <span>{copiedWaText ? 'Teks WA Tersalin!' : 'Salin Teks WA'}</span>
+                        </button>
+                      </div>
+
+                      <div className="flex justify-end pt-1">
+                        <button
+                          onClick={() => setShowReceiptModal(false)}
+                          className="w-full py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs rounded-xl transition-colors"
+                        >
+                          Tutup Kuitansi
+                        </button>
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+              )}
+
+              {/* MODAL: REMINDER REKOMENDASI MITRA VIA WHATSAPP */}
+              {showReminderModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
+                  <div className="bg-white rounded-2xl max-w-lg w-full p-6 sm:p-8 space-y-6 border border-natural-border shadow-2xl relative my-8">
+                    
+                    <div className="flex justify-between items-center pb-4 border-b border-gray-100">
+                      <div className="flex items-center gap-2">
+                        <Bell className="w-5 h-5 text-amber-600 animate-bounce" />
+                        <h3 className="font-serif font-bold text-lg text-natural-text-dark">
+                          Kirim Reminder & Motivasi Mitra
+                        </h3>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setShowReminderModal(false);
+                          setSelectedReminderPartner(null);
+                        }}
+                        className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    <div className="space-y-4 text-xs">
+                      {/* Select Partner */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-gray-700">Pilih Mitra / Pemberi Rekomendasi:</label>
+                        <select
+                          value={selectedReminderPartner?.id || ''}
+                          onChange={(e) => {
+                            const found = referralPartners.find(p => p.id === e.target.value);
+                            setSelectedReminderPartner(found || null);
+                          }}
+                          className="w-full px-3 py-2 bg-gray-50 border border-natural-border rounded-xl font-medium focus:outline-none focus:ring-1 focus:ring-natural-primary"
+                        >
+                          <option value="">-- Pilih Mitra --</option>
+                          {referralPartners.map(p => (
+                            <option key={`rem-opt-${p.id}`} value={p.id}>
+                              {p.name} ({p.role || 'Mitra'}) - {p.phone}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {selectedReminderPartner ? (
+                        <>
+                          {/* Partner Stats Card Preview */}
+                          {(() => {
+                            const stats = partnerStatsMap[selectedReminderPartner.id!] || {
+                              totalTxAmount: 0,
+                              txCount: 0,
+                              totalDeductedTxAmount: 0,
+                              remainingUnsettledTx: 0,
+                              totalCommissionPaid: 0
+                            };
+                            return (
+                              <div className="bg-amber-50/80 p-4 rounded-xl border border-amber-200 space-y-3 text-amber-950">
+                                <div className="flex justify-between items-center">
+                                  <span className="font-bold text-xs">{selectedReminderPartner.name}</span>
+                                  <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full font-bold">
+                                    {selectedReminderPartner.role || 'Mitra'}
+                                  </span>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                  <div className="bg-white/80 p-2.5 rounded-lg border border-amber-100">
+                                    <p className="text-[9px] text-gray-500 font-bold uppercase">Total Rekomendasi</p>
+                                    <p className="font-bold text-gray-900">Rp {stats.totalTxAmount.toLocaleString('id-ID')}</p>
+                                    <p className="text-[9px] text-gray-400">{stats.txCount} x transaksi</p>
+                                  </div>
+                                  <div className="bg-emerald-50/90 p-2.5 rounded-lg border border-emerald-200">
+                                    <p className="text-[9px] text-emerald-800 font-bold uppercase">Sisa Belum Diklaim</p>
+                                    <p className="font-bold text-emerald-900">Rp {stats.remainingUnsettledTx.toLocaleString('id-ID')}</p>
+                                    <p className="text-[9px] text-emerald-700">Sudah klaim: Rp {stats.totalDeductedTxAmount.toLocaleString('id-ID')}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
+
+                          {/* Preview Message Box */}
+                          <div className="space-y-1">
+                            <label className="text-xs font-bold text-gray-700">Pratinjau Pesan WhatsApp:</label>
+                            <div className="bg-emerald-50/50 p-3.5 rounded-xl border border-emerald-200 text-gray-800 text-[11px] leading-relaxed whitespace-pre-wrap font-sans max-h-52 overflow-y-auto">
+                              {getPartnerReminderText(selectedReminderPartner)}
+                            </div>
+                          </div>
+
+                          {/* Action Buttons */}
+                          <div className="space-y-2 pt-2">
+                            <a
+                              href={getPartnerReminderWaUrl(selectedReminderPartner)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-sm transition-colors"
+                            >
+                              <Share2 className="w-4 h-4" />
+                              <span>Kirim via WhatsApp Sekarang</span>
+                            </a>
+
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => copyPartnerReminderText(selectedReminderPartner)}
+                                className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-colors"
+                              >
+                                {copiedReminderWaText ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                {copiedReminderWaText ? 'Teks WhatsApp Tersalin!' : 'Salin Pesan WA'}
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  setShowReminderModal(false);
+                                  setSelectedReminderPartner(null);
+                                }}
+                                className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-xs rounded-xl transition-colors"
+                              >
+                                Tutup
+                              </button>
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="py-8 text-center text-gray-400 italic">
+                          Silakan pilih salah satu mitra di atas untuk menyiapkan pesan reminder.
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          ) : (
+            <motion.div
+              key="admin-tracking"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-6"
+            >
+              {!isAdminAuthenticated ? (
+                <div className="flex flex-col items-center justify-center py-20">
+                  <form onSubmit={handleAdminAuth} className="card-natural p-8 max-w-sm w-full space-y-6">
+                    <div className="text-center space-y-2">
+                       <AlertCircle className="w-12 h-12 text-natural-primary mx-auto opacity-20" />
+                       <h2 className="font-serif text-2xl text-natural-text-dark">Akses Terbatas</h2>
+                       <p className="text-xs text-natural-text-muted">Masukkan password admin dinalaundry21 untuk melihat tracking.</p>
+                    </div>
+                    <div className="space-y-2">
+                      <input 
+                        type="password" 
+                        placeholder="Password..."
+                        value={adminPassword || ''}
+                        onChange={(e) => setAdminPassword(e.target.value)}
+                        className="w-full px-4 py-3 bg-gray-50 border border-natural-border rounded-xl focus:outline-none focus:ring-1 focus:ring-natural-primary text-center tracking-widest"
+                      />
+                      {errorMsg && <p className="text-[10px] text-red-500 font-bold text-center">{errorMsg}</p>}
+                    </div>
+                    <button className="w-full py-3 btn-natural-primary rounded-xl font-bold text-sm shadow-md transition-all active:scale-[0.98]">
+                      Buka Akses Admin
+                    </button>
+                  </form>
+                </div>
+              ) : (
+                <>
+                  <header className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 pb-6 border-b border-gray-100 mb-8">
+                    <div className="space-y-1">
+                      <h2 className="font-serif text-4xl text-natural-text-dark tracking-tight font-bold">Admin Tracking Center</h2>
+                      <div className="flex flex-wrap items-center gap-2 mt-4">
+                        <button 
+                          onClick={() => setAdminCategory('followups')}
+                          className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all ${
+                            adminCategory === 'followups'
+                            ? 'bg-natural-primary text-white border-natural-primary shadow-lg shadow-natural-primary/20'
+                            : 'bg-white text-natural-text-muted border-natural-border hover:border-natural-primary'
+                          }`}
+                        >
+                          Follow-up Awal
+                        </button>
+                        <button 
+                          onClick={() => setAdminCategory('progress')}
+                          className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all ${
+                            adminCategory === 'progress'
+                            ? 'bg-natural-text-dark text-white border-natural-text-dark shadow-lg shadow-gray-200'
+                            : 'bg-white text-natural-text-muted border-natural-border hover:border-natural-primary'
+                          }`}
+                        >
+                          Data Progress
+                        </button>
+                        <button 
+                          onClick={() => setAdminCategory('vouchers')}
+                          className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all ${
+                            adminCategory === 'vouchers'
+                            ? 'bg-natural-primary text-white border-natural-primary shadow-lg shadow-natural-primary/20'
+                            : 'bg-white text-natural-text-muted border-natural-border hover:border-natural-primary'
+                          }`}
+                        >
+                          Data Voucher
+                        </button>
+                        <button 
+                          onClick={() => setAdminCategory('redeem_guide')}
+                          className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all ${
+                            adminCategory === 'redeem_guide'
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-lg shadow-emerald-600/20'
+                            : 'bg-white text-natural-text-muted border-natural-border hover:border-emerald-600'
+                          }`}
+                        >
+                          Redeem Tour Guide
+                        </button>
+                        <button 
+                          onClick={() => setAdminCategory('referrals')}
+                          className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all ${
+                            adminCategory === 'referrals'
+                            ? 'bg-amber-600 text-white border-amber-600 shadow-lg shadow-amber-600/20'
+                            : 'bg-white text-natural-text-muted border-natural-border hover:border-amber-600'
+                          }`}
+                        >
+                          Transaksi Rekomendasi
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="bg-red-50 p-4 rounded-2xl border border-red-100 flex items-center gap-4">
+                        <div>
+                          <p className="text-[9px] font-black uppercase text-red-600 tracking-wider">Cloudinary Cleanup</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <input 
+                              type="text" 
+                              placeholder="MM-YYYY" 
+                              value={bulkDeleteMonth} 
+                              onChange={(e) => setBulkDeleteMonth(e.target.value)} 
+                              className="w-24 px-2 py-1 bg-white border border-red-200 rounded text-xs focus:outline-none" 
+                            />
+                            <select 
+                              value={bulkDeleteCategory} 
+                              onChange={(e) => setBulkDeleteCategory(e.target.value as any)}
+                              className="px-2 py-1 bg-white border border-red-200 rounded text-xs focus:outline-none"
+                            >
+                              <option value="followups">Followup</option>
+                              <option value="progress">Progress</option>
+                            </select>
+                            <button 
+                              onClick={handleBulkDelete}
+                              disabled={isBulkDeleting}
+                              className="p-1 px-3 bg-red-600 text-white rounded font-bold text-[10px] hover:bg-red-700 transition-colors"
+                            >
+                              {isBulkDeleting ? '...' : 'Hapus Massal'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={downloadCSV}
+                        className="flex items-center gap-2 bg-natural-text-dark text-white px-6 py-4 rounded-2xl hover:opacity-90 transition-all font-black text-xs shadow-2xl"
+                      >
+                        <Download className="w-4 h-4" /> Export {
+                          adminCategory === 'followups' ? 'Followups' :
+                          adminCategory === 'progress' ? 'Progress' :
+                          adminCategory === 'vouchers' ? 'Vouchers' :
+                          adminCategory === 'redeem_guide' ? 'Redeem Guide' : 'Rekomendasi'
+                        } (.CSV)
+                      </button>
+                    </div>
+                  </header>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 card-natural p-5 shadow-sm">
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-natural-text-muted"><Search className="w-4 h-4" /></span>
+                      <input type="text" placeholder="Cari PIC/Konsumen/Mitra..." value={searchPic || ''} onChange={(e) => setSearchPic(e.target.value)} className="w-full pl-10 pr-3 py-3 bg-gray-50 border border-natural-border rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-natural-primary" />
+                    </div>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-natural-text-muted"><Calendar className="w-4 h-4" /></span>
+                      <input type="date" value={filterDate || ''} onChange={(e) => setFilterDate(e.target.value)} className="w-full pl-10 pr-3 py-3 bg-gray-50 border border-natural-border rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-natural-primary" />
+                    </div>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-natural-text-muted"><ListFilter className="w-4 h-4" /></span>
+                      <input type="text" placeholder="MM-YYYY (e.g. 04-2026)" value={filterMonth || ''} onChange={(e) => setFilterMonth(e.target.value)} className="w-full pl-10 pr-3 py-3 bg-gray-50 border border-natural-border rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-natural-primary" />
+                    </div>
+                    <div className="flex items-center justify-end">
+                      <span className="text-[10px] font-black text-natural-text-muted tracking-[0.2em] uppercase">
+                        Showing {
+                          adminCategory === 'followups' ? filteredFollowups.length :
+                          adminCategory === 'progress' ? filteredProgress.length :
+                          adminCategory === 'vouchers' ? filteredVouchersAdmin.length :
+                          adminCategory === 'redeem_guide' ? filteredRedemptionsAdmin.length :
+                          filteredReferralsAdmin.length
+                        } results
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="card-natural overflow-hidden mt-6">
+                    <div className="overflow-x-auto">
+                      {adminCategory === 'followups' ? (
+                        <table className="w-full text-left border-collapse">
+                          <thead className="bg-gray-50 text-[10px] uppercase font-black text-natural-text-muted border-b border-natural-border">
+                            <tr>
+                              <th className="px-6 py-5">Tanggal</th>
+                              <th className="px-6 py-5">Konsumen</th>
+                              <th className="px-6 py-5">WhatsApp/HP</th>
+                              <th className="px-6 py-5">PIC</th>
+                              <th className="px-6 py-5">Keterangan</th>
+                              <th className="px-6 py-5 text-right">Aksi</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-xs text-natural-text-dark divide-y divide-gray-50">
+                            {filteredFollowups.map((f, idx) => (
+                              <tr key={`admin-f-${f.id || idx}`} className="hover:bg-natural-bg/30 transition-colors">
+                                <td className="px-6 py-4 font-semibold">{f.date}</td>
+                                <td className="px-6 py-4 font-bold">{f.customerName}</td>
+                                <td className="px-6 py-4">{f.customerPhone}</td>
+                                <td className="px-6 py-4 italic">{f.pic}</td>
+                                <td className="px-6 py-4 max-w-[200px] truncate">{f.caption}</td>
+                                <td className="px-6 py-4 text-right">
+                                  <div className="flex items-center justify-end gap-3">
+                                    <button 
+                                      onClick={() => setPreviewImageUrl(f.screenshotUrl)}
+                                      className="text-natural-primary font-bold hover:underline"
+                                    >
+                                      Detail
+                                    </button>
+                                    <button onClick={() => { setActiveTab(CATEGORIES[0]); handleEdit(f); }} className="text-amber-500 hover:text-amber-600 transition-colors">
+                                      <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button 
+                                      onClick={() => handleDelete(f)} 
+                                      disabled={f.id ? deletingIds.has(f.id) : false}
+                                      className={`${f.id && deletingIds.has(f.id) ? 'text-gray-400' : 'text-red-500 hover:text-red-600'} transition-colors`}
+                                    >
+                                      {f.id && deletingIds.has(f.id) ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      ) : (
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      )}
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : adminCategory === 'progress' ? (
+                        <table className="w-full text-left border-collapse">
+                          <thead className="bg-natural-text-dark text-[10px] uppercase font-black text-white/70 border-b border-white/10">
+                            <tr>
+                              <th className="px-6 py-5">Tanggal Progress</th>
+                              <th className="px-6 py-5">Konsumen</th>
+                              <th className="px-6 py-5">Hasil</th>
+                              <th className="px-6 py-5">Media</th>
+                              <th className="px-6 py-5">PIC Progress</th>
+                              <th className="px-6 py-5 text-right">Aksi</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-xs text-natural-text-dark divide-y divide-gray-50">
+                            {filteredProgress.map((p, idx) => (
+                              <tr key={`admin-p-${p.id || idx}`} className="hover:bg-natural-bg/30 transition-colors">
+                                <td className="px-6 py-4 font-semibold">{p.date}</td>
+                                <td className="px-6 py-4 font-bold">{p.customerName}</td>
+                                <td className="px-6 py-4">
+                                  <span className={`px-2 py-1 rounded text-[9px] font-bold ${
+                                    p.outcome === ProgressOutcome.ADA_FEEDBACK ? 'bg-green-100 text-green-700' :
+                                    p.outcome === ProgressOutcome.TIDAK_ADA_RESPON ? 'bg-red-100 text-red-700' :
+                                    'bg-amber-100 text-amber-700'
+                                  }`}>
+                                    {p.outcome}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4">
+                                  <div className="flex flex-wrap gap-1">
+                                    {p.channels.map((c) => (
+                                      <span key={`admin-pr-ch-${p.id}-${c}`} className="text-[8px] bg-gray-100 px-1 rounded uppercase font-bold">{c}</span>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4 italic font-medium">{p.pic}</td>
+                                <td className="px-6 py-4 text-right">
+                                  <button 
+                                    onClick={() => setPreviewImageUrl(p.screenshotUrl)}
+                                    className="text-natural-primary font-bold hover:underline"
+                                  >
+                                    Lihat Bukti
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : adminCategory === 'redeem_guide' ? (
+                        <table className="w-full text-left border-collapse">
+                          <thead className="bg-emerald-700 text-[10px] uppercase font-black text-white border-b border-emerald-800">
+                            <tr>
+                              <th className="px-6 py-5">Tanggal Redeem</th>
+                              <th className="px-6 py-5">Nama Mitra Guide</th>
+                              <th className="px-6 py-5">No HP</th>
+                              <th className="px-6 py-5">Poin Ditukar</th>
+                              <th className="px-6 py-5">Nominal Reward (Rp)</th>
+                              <th className="px-6 py-5">Catatan / Bukti</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-xs text-natural-text-dark divide-y divide-gray-50">
+                            {filteredRedemptionsAdmin.length === 0 ? (
+                              <tr>
+                                <td colSpan={6} className="px-6 py-8 text-center text-natural-text-muted italic">
+                                  Tidak ada data penukaran poin tour guide yang ditemukan.
+                                </td>
+                              </tr>
+                            ) : (
+                              filteredRedemptionsAdmin.map((r, idx) => (
+                                <tr key={`admin-r-${r.id || idx}`} className="hover:bg-natural-bg/30 transition-colors">
+                                  <td className="px-6 py-4 font-semibold">{r.date}</td>
+                                  <td className="px-6 py-4 font-bold text-natural-text-dark">{r.partnerName}</td>
+                                  <td className="px-6 py-4 font-mono text-natural-text-muted">{r.partnerPhone || '-'}</td>
+                                  <td className="px-6 py-4 font-bold text-amber-600">{r.pointsRedeemed} Poin</td>
+                                  <td className="px-6 py-4 font-serif font-black text-emerald-700">Rp {Number(r.rewardAmount || 0).toLocaleString('id-ID')}</td>
+                                  <td className="px-6 py-4 text-natural-text-muted italic">{r.notes || '-'}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      ) : adminCategory === 'referrals' ? (
+                        <table className="w-full text-left border-collapse">
+                          <thead className="bg-amber-600 text-[10px] uppercase font-black text-white border-b border-amber-700">
+                            <tr>
+                              <th className="px-6 py-5">Tanggal</th>
+                              <th className="px-6 py-5">Mitra Guide</th>
+                              <th className="px-6 py-5">Konsumen</th>
+                              <th className="px-6 py-5">Total Transaksi</th>
+                              <th className="px-6 py-5">Poin Earned</th>
+                              <th className="px-6 py-5">Catatan</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-xs text-natural-text-dark divide-y divide-gray-50">
+                            {filteredReferralsAdmin.length === 0 ? (
+                              <tr>
+                                <td colSpan={6} className="px-6 py-8 text-center text-natural-text-muted italic">
+                                  Tidak ada data transaksi rekomendasi yang ditemukan.
+                                </td>
+                              </tr>
+                            ) : (
+                              filteredReferralsAdmin.map((t, idx) => (
+                                <tr key={`admin-ref-${t.id || idx}`} className="hover:bg-natural-bg/30 transition-colors">
+                                  <td className="px-6 py-4 font-semibold">{t.date}</td>
+                                  <td className="px-6 py-4 font-bold">{t.partnerName}</td>
+                                  <td className="px-6 py-4">{t.customerName || '-'}</td>
+                                  <td className="px-6 py-4 font-serif font-bold text-natural-text-dark">Rp {Number(t.amount || 0).toLocaleString('id-ID')}</td>
+                                  <td className="px-6 py-4 font-bold text-emerald-600">+{t.pointsEarned} Poin</td>
+                                  <td className="px-6 py-4 text-natural-text-muted italic">{t.notes || '-'}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <table className="w-full text-left border-collapse">
+                          <thead className="bg-natural-primary text-[10px] uppercase font-black text-white border-b border-natural-primary/10">
+                            <tr>
+                              <th className="px-6 py-5">Kode Voucher</th>
+                              <th className="px-6 py-5">Konsumen</th>
+                              <th className="px-6 py-5">Benefit</th>
+                              <th className="px-6 py-5">Masa Berlaku</th>
+                              <th className="px-6 py-5">Status</th>
+                              <th className="px-6 py-5 text-right">Penukar</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-xs text-natural-text-dark divide-y divide-gray-50">
+                            {filteredVouchersAdmin.map((v, idx) => {
+                              const isExpired = v.expiryDate < new Date().toISOString().split('T')[0];
+                              return (
+                                <tr key={`admin-v-${v.id || idx}`} className="hover:bg-natural-bg/30 transition-colors">
+                                  <td className="px-6 py-4 font-mono font-bold text-natural-primary">{v.code}</td>
+                                  <td className="px-6 py-4">
+                                    {v.customerName ? (
+                                      <div>
+                                        <p className="font-bold">{v.customerName}</p>
+                                        <p className="text-[10px] text-natural-text-muted">{v.customerPhone}</p>
+                                      </div>
+                                    ) : (
+                                      <span className="text-natural-text-muted">-</span>
+                                    )}
+                                  </td>
+                                  <td className="px-6 py-4 font-semibold">{getVoucherBenefitText(v)}</td>
+                                  <td className="px-6 py-4">{v.expiryDate}</td>
+                                  <td className="px-6 py-4">
+                                    <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
+                                      v.isRedeemed ? 'bg-gray-200 text-gray-600' :
+                                      isExpired ? 'bg-red-100 text-red-700' :
+                                      'bg-green-100 text-green-700'
+                                    }`}>
+                                      {v.isRedeemed ? 'Terpakai' : isExpired ? 'Expired' : 'Aktif'}
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-4 text-right">
+                                    {v.isRedeemed ? (
+                                      <div>
+                                        <p className="font-bold">{v.redeemedBy || 'PIC Kasir'}</p>
+                                        <p className="text-[9px] text-natural-text-muted">{v.redeemedAt || ''}</p>
+                                      </div>
+                                    ) : (
+                                      <span className="text-natural-text-muted">-</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </main>
+    </div>
+  );
+}
+
+function LoadingSpinner() {
+  return (
+    <div className="flex items-center space-x-2">
+      <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+      <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+      <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
+    </div>
+  );
+}
