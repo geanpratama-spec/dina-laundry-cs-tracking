@@ -1,0 +1,120 @@
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  }
+}
+
+export interface FollowUpData {
+  id?: string;
+  date: string;
+  customerName: string;
+  customerPhone: string;
+  pic: string;
+  caption: string;
+  screenshotUrl: string;
+  monthYear: string;
+  timestamp: any; // Server Timestamp
+}
+
+export enum ProgressOutcome {
+  ADA_FEEDBACK = 'Ada feedback',
+  TIDAK_ADA_RESPON = 'Tidak ada respon',
+  RESPON_TANPA_FEEDBACK = 'Konsumen respon tapi tidak ada feedback'
+}
+
+export enum ProgressChannel {
+  WHATSAPP = 'WhatsApp',
+  GOOGLE = 'Google',
+  INSTAGRAM = 'Instagram'
+}
+
+export interface ProgressData {
+  id?: string;
+  followupId: string;
+  customerName: string; // From sibling
+  outcome: ProgressOutcome;
+  channels: ProgressChannel[];
+  pic: string;
+  date: string;
+  caption: string;
+  screenshotUrl: string;
+  monthYear: string;
+  timestamp: any;
+}
+
+export enum VoucherType {
+  DISCOUNT_PERCENT = 'Discount %',
+  NOMINAL = 'Nominal Potongan',
+  FREE_ITEM = 'Free Item'
+}
+
+export interface VoucherData {
+  id?: string;
+  code: string;
+  type: VoucherType;
+  value: string;
+  minTransaction: number;
+  expiryDate: string;
+  isRedeemed: boolean;
+  redeemedAt?: string | null;
+  redeemedBy?: string | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  createdAt: any;
+}
+
+export interface ReferralPartner {
+  id?: string;
+  name: string;
+  phone: string;
+  role?: string; // e.g. Tour Guide, Hotel Receptionist, Driver, Travel Agent
+  notes?: string;
+  createdAt: any;
+}
+
+export interface ReferralTransaction {
+  id?: string;
+  partnerId: string;
+  partnerName: string;
+  partnerPhone: string;
+  date: string; // YYYY-MM-DD
+  customerName: string;
+  amount: number; // Transaction value in Rp (Nominal transaksi konsumen)
+  commissionAmount?: number; // Legacy optional field
+  pointsEarned?: number; // Legacy optional field
+  notes?: string;
+  createdAt: any;
+}
+
+export interface ReferralRedemption {
+  id?: string;
+  partnerId: string;
+  partnerName: string;
+  partnerPhone: string;
+  date: string; // YYYY-MM-DD
+  deductedTxAmount: number; // Pengurang nilai akumulasi transaksi (Rp) yang diperhitungkan
+  rewardAmount: number; // Nominal komisi / fee yang diserahkan (Rp) oleh staff
+  pointsRedeemed?: number; // Legacy optional field
+  notes?: string;
+  createdAt: any;
+}
